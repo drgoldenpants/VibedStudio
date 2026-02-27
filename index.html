@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Local Vibed Studio</title>
+    <meta name="description" content="Generate and edit AI videos using BytePlus VibedStudio." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="editor.css" />
+    <link rel="stylesheet" href="images.css" />
+</head>
+
+<body>
+    <div class="bg-grid"></div>
+    <div class="bg-glow glow-1"></div>
+    <div class="bg-glow glow-2"></div>
+
+    <div class="app-shell">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 160 120" aria-label="Logo" role="img">
+                        <polygon points="12,14 46,4 46,106 12,116" fill="#2f5aa8" />
+                        <polygon points="58,38 86,28 86,94 58,104" fill="#4a8cff" />
+                        <polygon points="102,30 126,22 126,90 102,98" fill="#18b6c2" />
+                        <polygon points="134,12 158,4 158,106 134,116" fill="#7fe9db" />
+                    </svg>
+                </div>
+                <span class="logo-text">LOCAL VIBED <span class="logo-sub">Studio</span></span>
+            </div>
+            <nav class="app-tabs">
+                <button class="app-tab" data-tab="images">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="2" />
+                        <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
+                        <path d="M21 15L16 10L5 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg>
+                    Images
+                </button>
+                <button class="app-tab active" data-tab="generate">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <polygon points="5,3 19,12 5,21" fill="currentColor" />
+                    </svg>
+                    Videos
+                </button>
+                <button class="app-tab" data-tab="editor">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <rect x="2" y="6" width="20" height="2" fill="currentColor" rx="1" />
+                        <rect x="2" y="11" width="20" height="2" fill="currentColor" rx="1" opacity=".6" />
+                        <rect x="2" y="16" width="20" height="2" fill="currentColor" rx="1" opacity=".4" />
+                        <rect x="2" y="6" width="7" height="2" fill="currentColor" rx="1" />
+                        <rect x="2" y="16" width="11" height="2" fill="currentColor" rx="1" />
+                    </svg>
+                    Editor
+                </button>
+            </nav>
+
+            <div class="header-right">
+                <button class="server-help-btn hidden" id="server-help-btn" title="Server mode required">
+                    Server Mode
+                </button>
+
+                <!-- Compact API key widget -->
+                <div class="hak-widget" id="hak-widget">
+                    <button class="hak-trigger" id="hak-trigger" title="Set API Key">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path
+                                d="M21 2L19 4M11.378 11.621A7 7 0 1 0 4.757 19.242M15 9L11.378 11.621M15.5 3.5L20.5 8.5L14 15L9 10L15.5 3.5Z"
+                                stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                                stroke-linejoin="round" />
+                        </svg>
+                        <span class="hak-dot" id="hak-dot"></span>
+                    </button>
+                    <div class="hak-panel" id="hak-panel">
+                        <div class="hak-inner">
+                            <label class="hak-label" for="api-key">BytePlus API Key</label>
+                            <div class="hak-input-row">
+                                <input type="password" id="api-key" class="hak-input" placeholder="Paste your API key…"
+                                    autocomplete="off" />
+                                <button class="hak-eye" id="toggle-key" title="Show/hide"
+                                    aria-label="Toggle visibility">
+                                    <svg id="eye-icon" viewBox="0 0 24 24" fill="none">
+                                        <path d="M1 12C1 12 5 4 12 4C19 4 23 12 23 12C23 12 19 20 12 20C5 20 1 12 1 12Z"
+                                            stroke="currentColor" stroke-width="2" />
+                                        <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <p class="hak-hint">Get your key from <a href="https://console.byteplus.com/ark"
+                                    target="_blank" rel="noopener">BytePlus Console</a></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- ═══════════════════════════════════════
+         GENERATE TAB
+         ═══════════════════════════════════════ -->
+        <div class="tab-page active" id="page-generate">
+            <main class="main-layout">
+                <!-- Left Panel: Controls -->
+                <aside class="control-panel">
+
+                    <section class="panel-section" id="section-model">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor"
+                                    stroke-width="2" />
+                                <path d="M9 9H15M9 12H15M9 15H12" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" />
+                            </svg>
+                            Model
+                        </h3>
+                        <div class="model-grid" id="model-grid">
+                            <label class="model-card selected" data-model="seedance-1-5-pro-251215">
+                                <input type="radio" name="model" value="seedance-1-5-pro-251215" checked hidden />
+                                <div class="model-badge pro">PRO</div>
+                                <div class="model-name">Seedance 1.5</div>
+                                <div class="model-desc">T2V · I2V · 1080p · 24fps</div>
+                            </label>
+                            <label class="model-card" data-model="seedance-1-0-pro-250528">
+                                <input type="radio" name="model" value="seedance-1-0-pro-250528" hidden />
+                                <div class="model-badge pro">PRO</div>
+                                <div class="model-name">Seedance 1.0 Pro</div>
+                                <div class="model-desc">T2V · I2V · High quality</div>
+                            </label>
+                            <label class="model-card" data-model="seedance-1-0-lite-t2v-250428">
+                                <input type="radio" name="model" value="seedance-1-0-lite-t2v-250428" hidden />
+                                <div class="model-badge lite">LITE</div>
+                                <div class="model-name">Seedance 1.0 Lite T2V</div>
+                                <div class="model-desc">Text-to-Video · Fast</div>
+                            </label>
+                            <label class="model-card" data-model="seedance-1-0-lite-i2v-250428">
+                                <input type="radio" name="model" value="seedance-1-0-lite-i2v-250428" hidden />
+                                <div class="model-badge lite">LITE</div>
+                                <div class="model-name">Seedance 1.0 Lite I2V</div>
+                                <div class="model-desc">Image-to-Video · Fast</div>
+                            </label>
+                        </div>
+                    </section>
+
+                    <div class="divider"></div>
+
+                    <section class="panel-section" id="section-params">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <path
+                                    d="M12 2V6M12 18V22M4.93 4.93L7.76 7.76M16.24 16.24L19.07 19.07M2 12H6M18 12H22M4.93 19.07L7.76 16.24M16.24 7.76L19.07 4.93"
+                                    stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                            </svg>
+                            Parameters
+                        </h3>
+                        <div class="input-group">
+                            <label class="input-label">Aspect Ratio</label>
+                            <div class="ratio-grid" id="ratio-grid">
+                                <button class="ratio-btn" data-ratio="adaptive" id="ratio-adaptive">
+                                    <span class="ratio-icon adaptive-icon"></span>Adaptive
+                                </button>
+                                <button class="ratio-btn selected" data-ratio="16:9" id="ratio-16-9">
+                                    <span class="ratio-icon landscape-icon"></span>16:9
+                                </button>
+                                <button class="ratio-btn" data-ratio="9:16" id="ratio-9-16">
+                                    <span class="ratio-icon portrait-icon"></span>9:16
+                                </button>
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="duration-slider">
+                                Duration
+                                <span class="label-value" id="duration-display">5s</span>
+                            </label>
+                            <div class="slider-wrap">
+                                <input type="range" id="duration-slider" class="slider" min="5" max="10" step="5"
+                                    value="5" />
+                                <div class="slider-ticks"><span>5s</span><span>10s</span></div>
+                            </div>
+                        </div>
+                        <div class="toggle-row">
+                            <div class="toggle-item">
+                                <div class="toggle-info">
+                                    <span class="toggle-label">Generate Audio</span>
+                                    <span class="toggle-desc">Add AI sound to video</span>
+                                </div>
+                                <label class="toggle" for="gen-audio">
+                                    <input type="checkbox" id="gen-audio" checked /><span class="track"></span>
+                                </label>
+                            </div>
+                            <div class="toggle-item">
+                                <div class="toggle-info">
+                                    <span class="toggle-label">Watermark</span>
+                                    <span class="toggle-desc">Add BytePlus watermark</span>
+                                </div>
+                                <label class="toggle" for="watermark">
+                                    <input type="checkbox" id="watermark" /><span class="track"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </section>
+
+                    <div class="divider"></div>
+
+                    <section class="panel-section" id="section-preview">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <path d="M8 6L2 12L8 18M16 6L22 12L16 18" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                            Request Preview
+                            <button class="copy-btn" id="copy-json" title="Copy JSON">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor"
+                                        stroke-width="2" />
+                                    <path
+                                        d="M5 15H4C2.895 15 2 14.105 2 13V4C2 2.895 2.895 2 4 2H13C14.105 2 15 2.895 15 4V5"
+                                        stroke="currentColor" stroke-width="2" />
+                                </svg>
+                            </button>
+                        </h3>
+                        <pre class="code-preview" id="json-preview"><code>{}</code></pre>
+                    </section>
+
+                    <div class="divider"></div>
+
+                    <section class="panel-section" id="section-response">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor"
+                                    stroke-width="2" />
+                                <path d="M7 8H17M7 12H17M7 16H13" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" />
+                            </svg>
+                            Response
+                            <button class="copy-btn" id="copy-response" title="Copy Response">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor"
+                                        stroke-width="2" />
+                                    <path
+                                        d="M5 15H4C2.895 15 2 14.105 2 13V4C2 2.895 2.895 2 4 2H13C14.105 2 15 2.895 15 4V5"
+                                        stroke="currentColor" stroke-width="2" />
+                                </svg>
+                            </button>
+                        </h3>
+                        <pre class="code-preview" id="json-response"><code>{}</code></pre>
+                    </section>
+                </aside>
+
+                <!-- Right Panel: Prompt + Output -->
+                <div class="content-panel">
+                    <section class="prompt-section">
+                        <div class="prompt-header">
+                            <h2 class="prompt-title">Generate Video</h2>
+                            <div class="mode-tabs">
+                                <button class="mode-tab active" id="tab-text" data-mode="text">
+                                    <svg viewBox="0 0 24 24" fill="none">
+                                        <path d="M4 6H20M4 12H14M4 18H10" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" />
+                                    </svg>
+                                    Text to Video
+                                </button>
+                                <button class="mode-tab" id="tab-image" data-mode="image">
+                                    <svg viewBox="0 0 24 24" fill="none">
+                                        <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor"
+                                            stroke-width="2" />
+                                        <circle cx="8.5" cy="8.5" r="1.5" stroke="currentColor" stroke-width="2" />
+                                        <path d="M21 15L16 10L5 21" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" />
+                                    </svg>
+                                    Image to Video
+                                </button>
+                            </div>
+                        </div>
+                        <div class="prompt-body" id="text-mode">
+                            <div class="textarea-wrap">
+                                <textarea id="text-prompt" class="prompt-textarea"
+                                    placeholder="Describe your video in detail…&#10;&#10;e.g. A cinematic aerial shot of a glowing city at night, rain-soaked streets reflecting neon lights, slow camera drift, hyper-realistic…"
+                                    maxlength="4096"></textarea>
+                                <div class="prompt-meta-info">
+                                    <span class="char-count"><span id="char-count">0</span>/4096</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="prompt-body hidden" id="image-mode">
+                            <div class="image-drop-zone" id="image-drop-zone">
+                                <input type="file" id="image-file" accept="image/*" hidden />
+                                <div class="drop-content" id="drop-content">
+                                    <svg viewBox="0 0 24 24" fill="none">
+                                        <path d="M12 15V3M12 3L8 7M12 3L16 7" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" stroke-linejoin="round" />
+                                        <path d="M3 16V19C3 20.105 3.895 21 5 21H19C20.105 21 21 20.105 21 19V16"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                                    </svg>
+                                    <p>Drop image here or <span class="link-text">browse</span></p>
+                                    <p class="drop-hint">Supports JPG, PNG, WebP</p>
+                                </div>
+                                <img id="image-preview-thumb" class="hidden" alt="Preview" />
+                                <button class="remove-img hidden" id="remove-image">✕</button>
+                            </div>
+                            <div class="textarea-wrap" style="margin-top:12px;">
+                                <textarea id="image-prompt" class="prompt-textarea" style="min-height:80px;"
+                                    placeholder="Optional: Describe how you want the image to animate…"
+                                    maxlength="4096"></textarea>
+                            </div>
+                        </div>
+                        <div class="generate-bar">
+                            <button class="generate-btn" id="generate-btn">
+                                <span class="btn-icon"><svg viewBox="0 0 24 24" fill="none">
+                                        <polygon points="5,3 19,12 5,21" fill="currentColor" />
+                                    </svg></span>
+                                <span class="btn-text">Generate Video</span>
+                                <span class="queue-badge hidden" id="queue-badge">0</span>
+                            </button>
+                        </div>
+                    </section>
+                    <section class="output-section">
+                        <div class="status-bar hidden" id="status-bar">
+                            <div class="status-inner">
+                                <span class="status-spinner"><span class="spinner sm"></span></span>
+                                <span class="status-text" id="status-text">Initializing task…</span>
+                                <span class="status-id" id="status-id"></span>
+                            </div>
+                            <div class="status-progress">
+                                <div class="progress-bar" id="progress-bar"></div>
+                            </div>
+                        </div>
+                        <div class="queue-panel hidden" id="queue-panel">
+                            <div class="queue-panel-header">
+                                <span class="spinner sm purple"></span><span>In Progress</span>
+                            </div>
+                            <div class="queue-list" id="queue-list"></div>
+                        </div>
+                        <div class="video-output-header">
+                            <span class="video-output-title">Generated Videos</span>
+                            <div class="video-output-actions">
+                                <button class="video-output-btn" id="export-history-btn">Export History</button>
+                                <button class="video-output-btn ghost" id="import-history-btn">Import History</button>
+                                <input type="file" id="import-history-input" accept="application/json" hidden />
+                            </div>
+                        </div>
+                        <div class="empty-state" id="empty-state">
+                            <div class="empty-icon">
+                                <svg viewBox="0 0 80 80" fill="none">
+                                    <rect x="10" y="20" width="60" height="40" rx="4" stroke="url(#g1)"
+                                        stroke-width="2" />
+                                    <polygon points="32,30 32,50 52,40" fill="url(#g1)" opacity="0.6" />
+                                    <circle cx="60" cy="20" r="8" fill="url(#g2)" opacity="0.4" />
+                                    <defs>
+                                        <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+                                            <stop offset="0%" stop-color="#7c3aed" />
+                                            <stop offset="100%" stop-color="#2563eb" />
+                                        </linearGradient>
+                                        <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+                                            <stop offset="0%" stop-color="#7c3aed" />
+                                            <stop offset="100%" stop-color="#06b6d4" />
+                                        </linearGradient>
+                                    </defs>
+                                </svg>
+                            </div>
+                            <h3>No videos yet</h3>
+                            <p>Configure your settings, enter a prompt,<br />and hit Generate to create your first
+                                video.</p>
+                        </div>
+                        <div class="video-grid" id="video-grid"></div>
+                    </section>
+                </div>
+            </main>
+        </div>
+
+        <!-- ═══════════════════════════════════════
+         EDITOR TAB
+         ═══════════════════════════════════════ -->
+        <div class="tab-page hidden" id="page-editor">
+            <div class="editor-layout">
+
+                <!-- Media Library -->
+                <aside class="media-panel">
+                    <div class="media-panel-top">
+                        <div class="media-panel-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <rect x="3" y="3" width="7" height="7" rx="1" stroke="currentColor"
+                                    stroke-width="1.5" />
+                                <rect x="14" y="3" width="7" height="7" rx="1" stroke="currentColor"
+                                    stroke-width="1.5" />
+                                <rect x="3" y="14" width="7" height="7" rx="1" stroke="currentColor"
+                                    stroke-width="1.5" />
+                                <rect x="14" y="14" width="7" height="7" rx="1" stroke="currentColor"
+                                    stroke-width="1.5" />
+                            </svg>
+                            Uploads
+                        </div>
+                        <div class="media-upload-row">
+                            <button class="media-upload-btn" id="upload-video-btn">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor"
+                                        stroke-width="1.5" />
+                                    <polygon points="10,8 10,16 17,12" fill="currentColor" opacity="0.8" />
+                                </svg>
+                                Video
+                            </button>
+                            <button class="media-upload-btn" id="upload-audio-btn">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <path d="M9 18V5L21 3V16" stroke="currentColor" stroke-width="1.5"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                    <circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="1.5" />
+                                    <circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="1.5" />
+                                </svg>
+                                Audio
+                            </button>
+                            <input type="file" id="upload-video-input" accept="video/*" hidden />
+                            <input type="file" id="upload-audio-input" accept="audio/*" hidden />
+                        </div>
+                    </div>
+                    <div class="media-sections">
+                        <div>
+                            <div class="media-section-header">
+                                <span class="media-section-title">Uploads</span>
+                                <span class="media-count-badge" id="media-up-count">0</span>
+                            </div>
+                            <div id="media-uploads" class="media-list">
+                                <div class="media-empty-hint">Upload video or audio files above</div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="media-section-header">
+                                <span class="media-section-title">Generated Videos</span>
+                                <span class="media-count-badge" id="media-gen-count">0</span>
+                            </div>
+                            <div id="media-generated" class="media-list">
+                                <div class="media-empty-hint">Generate videos in the Generate tab to see them here</div>
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+
+                <!-- Editor Main -->
+                <div class="editor-main">
+
+                    <!-- Top: Preview + Toolbar -->
+                    <div class="editor-top">
+                        <div class="preview-area">
+                            <div class="preview-wrapper">
+                                <video id="preview-video" playsinline></video>
+                                <div class="preview-empty" id="preview-empty">
+                                    <svg viewBox="0 0 48 48" fill="none">
+                                        <rect x="4" y="8" width="40" height="30" rx="3" stroke="currentColor"
+                                            stroke-width="2" opacity="0.4" />
+                                        <polygon points="19,17 19,31 33,24" fill="currentColor" opacity="0.25" />
+                                    </svg>
+                                    Drag clips to the timeline to get started
+                                </div>
+                            </div>
+                            <div class="preview-timebar">
+                                <span class="preview-t" id="preview-cur">0:00</span>
+                                <span class="preview-sep">/</span>
+                                <span class="preview-t" id="preview-dur">1:00</span>
+                            </div>
+                        </div>
+                        <div class="editor-toolbar">
+                            <div class="editor-toolbar-title">Tracks</div>
+                            <button class="tool-btn" id="tool-add-video-track">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="2" y="9" width="20" height="6" rx="2" stroke="currentColor"
+                                        stroke-width="1.5" />
+                                    <path d="M12 5V19M9 12H15" stroke="currentColor" stroke-width="1.5"
+                                        stroke-linecap="round" />
+                                </svg>
+                                Add Video Track
+                            </button>
+                            <button class="tool-btn" id="tool-add-audio-track">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="2" y="9" width="20" height="6" rx="2" stroke="currentColor"
+                                        stroke-width="1.5" />
+                                    <path d="M9 12q3-3 6 0" stroke="currentColor" stroke-width="1.5"
+                                        stroke-linecap="round" />
+                                </svg>
+                                Add Audio Track
+                            </button>
+                            <div class="tool-spacer"></div>
+                            <button class="tool-btn" id="tool-load-test">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5" />
+                                    <path d="M12 8v4l3 3" stroke="currentColor" stroke-width="1.5"
+                                        stroke-linecap="round" />
+                                </svg>
+                                Load Test Media
+                            </button>
+                            <button class="tool-btn" id="tool-save-project">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <path d="M5 3H16L20 7V21H5V3Z" stroke="currentColor" stroke-width="1.5" />
+                                    <path d="M7 3V9H15V3" stroke="currentColor" stroke-width="1.5" />
+                                    <rect x="7" y="13" width="10" height="6" rx="1.5" stroke="currentColor"
+                                        stroke-width="1.5" />
+                                </svg>
+                                Save Project
+                            </button>
+                            <button class="tool-btn" id="tool-load-project">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <path d="M5 3H16L20 7V21H5V3Z" stroke="currentColor" stroke-width="1.5" />
+                                    <path d="M12 15V9M12 9L9 12M12 9L15 12" stroke="currentColor" stroke-width="1.5"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                Load Project
+                            </button>
+                            <input type="file" id="project-file-input" accept="application/json" hidden />
+                            <button class="tool-btn success" id="tool-export">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <path d="M12 2V17M12 17L7 12M12 17L17 12" stroke="currentColor" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                    <path d="M3 20H21" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                                </svg>
+                                Export
+                            </button>
+                            <button class="tool-btn danger" id="tool-clear-timeline">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <path d="M3 6H21M8 6V4H16V6M19 6L18 20H6L5 6" stroke="currentColor"
+                                        stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                Clear All
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Bottom: Timeline -->
+                    <div class="timeline-area">
+                        <div class="tl-controls">
+                            <button class="tl-btn" id="tl-rewind" title="Rewind">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <polygon points="19,20 9,12 19,4" fill="currentColor" />
+                                    <rect x="5" y="4" width="2" height="16" fill="currentColor" rx="1" />
+                                </svg>
+                            </button>
+                            <button class="tl-btn" id="tl-play-pause" title="Play / Pause">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <polygon points="5,3 19,12 5,21" fill="currentColor" />
+                                </svg>
+                            </button>
+                            <button class="tl-btn" id="tl-stop" title="Stop">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor"
+                                        opacity="0.85" />
+                                </svg>
+                            </button>
+                            <div class="tl-time" id="tl-time">0:00.0</div>
+                            <div class="tl-zoom-group">
+                                <button class="tl-btn sm" id="tl-zoom-out">−</button>
+                                <span class="tl-zoom-label" id="tl-zoom-label">80px/s</span>
+                                <button class="tl-btn sm" id="tl-zoom-in">+</button>
+                            </div>
+                        </div>
+
+                        <div class="tl-body">
+                            <!-- Labels column -->
+                            <div class="tl-label-col" id="tl-label-col">
+                                <div class="tl-label-ruler"></div>
+                                <!-- track label rows injected by JS -->
+                            </div>
+                            <!-- Scrollable area -->
+                            <div class="tl-scroll-area" id="tl-scroll-area">
+                                <div class="tl-content" id="tl-content">
+                                    <div class="tl-ruler" id="tl-ruler"></div>
+                                    <div class="tl-tracks" id="tl-tracks">
+                                        <div class="tl-empty-hint" id="tl-empty-hint">Drag media items from the library
+                                            onto a track</div>
+                                    </div>
+                                    <div class="tl-playhead" id="tl-playhead"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════════════════════════════════════
+             IMAGES TAB (inside app-shell for height)
+             ═══════════════════════════════════════ -->
+        <div class="tab-page hidden" id="page-images">
+            <div class="main-layout">
+                <!-- Left Panel: Settings -->
+                <aside class="control-panel">
+                    <section class="panel-section">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor"
+                                    stroke-width="2" />
+                                <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
+                                <path d="M21 15L16 10L5 21" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" />
+                            </svg>
+                            Model
+                        </h3>
+                        <div class="model-grid" id="img-model-grid"></div>
+                    </section>
+                    <div class="divider"></div>
+                    <section class="panel-section">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <path
+                                    d="M12 2V6M12 18V22M4.93 4.93L7.76 7.76M16.24 16.24L19.07 19.07M2 12H6M18 12H22M4.93 19.07L7.76 16.24M16.24 7.76L19.07 4.93"
+                                    stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                            </svg>
+                            Parameters
+                        </h3>
+                        <div class="input-group">
+                            <label class="input-label">Resolution</label>
+                            <div class="size-grid">
+                                <button class="size-btn img-size-btn" data-size="1K">1K</button>
+                                <button class="size-btn img-size-btn selected" data-size="2K">2K</button>
+                                <button class="size-btn img-size-btn" data-size="3K">3K</button>
+                                <button class="size-btn img-size-btn" data-size="4K">4K</button>
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Format</label>
+                            <div class="format-row">
+                                <button class="format-btn img-format-btn selected" data-format="png">PNG</button>
+                                <button class="format-btn img-format-btn" data-format="jpeg">JPEG</button>
+                            </div>
+                        </div>
+                    </section>
+
+                    <div class="divider"></div>
+
+                    <section class="panel-section" id="img-section-preview">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <path d="M8 6L2 12L8 18M16 6L22 12L16 18" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                            Request Preview
+                            <button class="copy-btn" id="img-copy-json" title="Copy JSON">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor"
+                                        stroke-width="2" />
+                                    <path
+                                        d="M5 15H4C2.895 15 2 14.105 2 13V4C2 2.895 2.895 2 4 2H13C14.105 2 15 2.895 15 4V5"
+                                        stroke="currentColor" stroke-width="2" />
+                                </svg>
+                            </button>
+                        </h3>
+                        <pre class="code-preview" id="img-json-preview"><code>{}</code></pre>
+                    </section>
+
+                    <div class="divider"></div>
+
+                    <section class="panel-section" id="img-section-response">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor"
+                                    stroke-width="2" />
+                                <path d="M7 8H17M7 12H17M7 16H13" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" />
+                            </svg>
+                            Response
+                            <button class="copy-btn" id="img-copy-response" title="Copy Response">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor"
+                                        stroke-width="2" />
+                                    <path
+                                        d="M5 15H4C2.895 15 2 14.105 2 13V4C2 2.895 2.895 2 4 2H13C14.105 2 15 2.895 15 4V5"
+                                        stroke="currentColor" stroke-width="2" />
+                                </svg>
+                            </button>
+                        </h3>
+                        <pre class="code-preview" id="img-json-response"><code>{}</code></pre>
+                    </section>
+
+                </aside>
+                <!-- Right Panel -->
+                <div class="content-panel">
+                    <section class="prompt-section">
+                        <div class="prompt-header">
+                            <h2 class="prompt-title">Generate Image</h2>
+                        </div>
+                        <div class="prompt-body">
+                            <div class="textarea-wrap">
+                                <textarea id="img-prompt" class="prompt-textarea"
+                                    placeholder="Describe the image you want to generate…&#10;&#10;e.g. A cyberpunk city at dusk, neon-lit streets, ultra-realistic, cinematic lighting…"
+                                    maxlength="4096"></textarea>
+                                <div class="prompt-meta-info">
+                                    <span class="char-count"><span id="img-char-count">0</span>/4096</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="generate-bar">
+                            <button class="generate-btn" id="img-generate-btn">
+                                <span class="btn-icon"><svg viewBox="0 0 24 24" fill="none">
+                                        <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor"
+                                            stroke-width="2" />
+                                        <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
+                                        <path d="M21 15L16 10L5 21" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" />
+                                    </svg></span>
+                                <span class="btn-text">Generate Image</span>
+                            </button>
+                        </div>
+                    </section>
+                    <section class="output-section"
+                        style="padding:0;display:flex;flex-direction:column;min-height:0;overflow:hidden;">
+                        <div class="img-output-header">
+                            <span class="img-output-title">Generated Images</span>
+                            <span class="img-count-badge" id="img-count-badge">0</span>
+                        </div>
+                        <div id="img-empty-state" class="image-empty-state">
+                            <div class="image-empty-icon">
+                                <svg viewBox="0 0 80 80" fill="none">
+                                    <rect x="8" y="8" width="64" height="64" rx="6" stroke="url(#gi2)"
+                                        stroke-width="2" />
+                                    <circle cx="24" cy="28" r="8" fill="url(#gi2)" opacity="0.5" />
+                                    <path d="M8 56L28 36L44 52L56 40L72 56" stroke="url(#gi2)" stroke-width="2.5"
+                                        fill="none" stroke-linecap="round" />
+                                    <defs>
+                                        <linearGradient id="gi2" x1="0%" y1="0%" x2="100%" y2="100%">
+                                            <stop offset="0%" stop-color="#7c3aed" />
+                                            <stop offset="100%" stop-color="#06b6d4" />
+                                        </linearGradient>
+                                    </defs>
+                                </svg>
+                            </div>
+                            <h3>No images yet</h3>
+                            <p>Select a model, resolution, enter a prompt and hit Generate.</p>
+                        </div>
+                        <div class="image-grid" id="img-grid"></div>
+                    </section>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /app-shell -->
+
+
+    <!-- Error Modal -->
+    <div class="modal-overlay hidden" id="error-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal">
+            <div class="modal-header">
+                <div class="modal-icon">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" />
+                        <path d="M12 8V12M12 16H12.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                    </svg>
+                </div>
+                <h3 class="modal-title" id="modal-title">Error</h3>
+                <button class="modal-close" id="modal-close" aria-label="Close">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                    </svg>
+                </button>
+            </div>
+            <p class="modal-message" id="modal-message"></p>
+            <div class="modal-footer">
+                <button class="modal-ok-btn" id="modal-ok">Got it</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="app.js"></script>
+    <script src="editor.js"></script>
+    <script src="images.js"></script>
+</body>
+
+
+</html>

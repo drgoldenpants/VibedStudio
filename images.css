@@ -1,0 +1,319 @@
+/* ============================================================
+   Images Tab — images.css
+   ============================================================ */
+
+/* ── Images page layout ─────────────────────────────────────── */
+#page-images .main-layout {
+    display: flex;
+    height: 100%;
+    overflow: hidden;
+}
+
+/* Reuse control-panel sizing from generate tab */
+#page-images .control-panel {
+    overflow-y: auto;
+}
+
+/* ── Image size picker ──────────────────────────────────────── */
+.size-grid {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.size-btn {
+    flex: 1;
+    min-width: 44px;
+    padding: 7px 4px;
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-1);
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: all var(--transition);
+    text-align: center;
+}
+
+.size-btn:hover {
+    border-color: var(--border-bright);
+    color: var(--text-0);
+}
+
+.size-btn.selected {
+    background: linear-gradient(135deg, rgba(124, 58, 237, 0.3), rgba(37, 99, 235, 0.25));
+    border-color: var(--purple);
+    color: var(--purple-light);
+}
+
+.size-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+/* ── Output format toggle row ───────────────────────────────── */
+.format-row {
+    display: flex;
+    gap: 6px;
+}
+
+.format-btn {
+    flex: 1;
+    padding: 6px;
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-1);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition);
+    text-align: center;
+}
+
+.format-btn:hover {
+    border-color: var(--border-bright);
+}
+
+.format-btn.selected {
+    background: rgba(124, 58, 237, 0.15);
+    border-color: var(--purple);
+    color: var(--purple-light);
+}
+
+/* ── Image count badge ──────────────────────────────────────── */
+.img-count-badge {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-2);
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 2px 8px;
+    margin-left: auto;
+}
+
+/* ── Image gallery grid ─────────────────────────────────────── */
+.image-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 14px;
+    padding: 20px;
+    align-content: start;
+    overflow-y: auto;
+}
+
+.image-grid::-webkit-scrollbar {
+    width: 5px;
+}
+
+.image-grid::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+/* ── Image card ─────────────────────────────────────────────── */
+.image-card {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    transition: border-color var(--transition), box-shadow var(--transition);
+    position: relative;
+    transform: translateZ(0);
+}
+
+.image-card:hover {
+    border-color: var(--border-bright);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.image-card-thumb {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    background: var(--bg-3);
+    overflow: hidden;
+}
+
+.image-card-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.4s ease;
+}
+
+.image-card:hover .image-card-thumb img {
+    transform: scale(1.04);
+}
+
+/* Generating spinner overlay */
+.image-card-thumb .img-generating {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: var(--bg-3);
+}
+
+.img-generating-text {
+    font-size: 12px;
+    color: var(--text-2);
+    font-weight: 500;
+}
+
+/* Hover overlay with actions */
+.image-card-overlay {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.85) 0%, transparent 50%);
+    opacity: 0;
+    transition: opacity 0.25s;
+    display: flex;
+    align-items: flex-end;
+    padding: 12px;
+    gap: 6px;
+}
+
+.image-card:hover .image-card-overlay {
+    opacity: 1;
+}
+
+.img-action-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(0, 0, 0, 0.5);
+    color: rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(4px);
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.img-action-btn svg {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+}
+
+.img-action-btn:hover {
+    background: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.5);
+}
+
+.img-action-btn.danger:hover {
+    background: rgba(239, 68, 68, 0.3);
+    border-color: rgba(239, 68, 68, 0.6);
+}
+
+.img-action-btn.primary {
+    background: rgba(124, 58, 237, 0.6);
+    border-color: rgba(124, 58, 237, 0.7);
+}
+
+/* Card footer info */
+.image-card-info {
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+}
+
+.image-card-prompt {
+    font-size: 11px;
+    color: var(--text-1);
+    line-height: 1.4;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    margin-bottom: 6px;
+}
+
+.image-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.image-tag {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--bg-3);
+    color: var(--text-2);
+    border: 1px solid var(--border);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.image-tag.purple {
+    background: rgba(124, 58, 237, 0.15);
+    color: var(--purple-light);
+    border-color: rgba(124, 58, 237, 0.25);
+}
+
+.image-tag.cyan {
+    background: rgba(6, 182, 212, 0.15);
+    color: var(--cyan);
+    border-color: rgba(6, 182, 212, 0.25);
+}
+
+/* ── Output area header (reuse pattern) ─────────────────────── */
+.img-output-header {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px 0;
+    gap: 10px;
+}
+
+.img-output-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-1);
+}
+
+/* ── Empty state for images ─────────────────────────────────── */
+.image-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 16px;
+    color: var(--text-2);
+    text-align: center;
+    padding: 40px;
+}
+
+.image-empty-state h3 {
+    font-size: 16px;
+    color: var(--text-1);
+    margin: 0;
+}
+
+.image-empty-state p {
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 0;
+}
+
+.image-empty-icon {
+    opacity: 0.3;
+}
+
+.image-empty-icon svg {
+    width: 80px;
+    height: 80px;
+}
