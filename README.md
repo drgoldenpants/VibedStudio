@@ -29,6 +29,10 @@ http://localhost:8787
 ### 3) Set your API key
 Click the key icon in the header and paste your BytePlus API key. The key is stored in `localStorage` on your machine.
 
+## Screenshots
+![Editor view](screenshots/editor.png)
+![Video generation view](screenshots/videos.png)
+
 ## Project Structure
 - `index.html` — main UI shell
 - `style.css`, `editor.css`, `images.css` — styling
