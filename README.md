@@ -2,6 +2,10 @@
 
 Local Vibed Studio is a lightweight, local-first UI for generating and managing AI videos and images with BytePlus. It runs entirely in the browser and stores history locally (IndexedDB), with an optional dev server for CORS-safe image generation and editor access.
 
+## Live Demo
+Once GitHub Pages is enabled for this repo, you can launch the app here:
+https://drgoldenpants.github.io/VibedStudio/
+
 ## Features
 - Video generation (text or image prompt)
 - Image generation (Seedream models)
