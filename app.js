@@ -167,6 +167,18 @@ function openDB() {
   });
 }
 
+async function ensureDBReady() {
+  if (window.db) return true;
+  try {
+    await openDB();
+    return true;
+  } catch (e) {
+    console.warn('IndexedDB unavailable:', e);
+    showToast('History is unavailable in this mode. Use server mode (http://localhost:8787).', 'error', '⚠️');
+    return false;
+  }
+}
+
 window.dbPut = function dbPut(store, item) {
   return new Promise((resolve, reject) => {
     const tx = window.db.transaction(store, 'readwrite');
@@ -254,7 +266,7 @@ function dataUrlToBlob(dataUrl) {
 }
 
 async function exportVideoHistory() {
-  if (!window.db) return;
+  if (!(await ensureDBReady())) return;
   const records = await dbGetAll('videos');
   if (!records.length) {
     showToast('No video history to export', 'info', '📦');
@@ -302,7 +314,8 @@ async function exportVideoHistory() {
 }
 
 async function importVideoHistory(file) {
-  if (!file || !window.db) return;
+  if (!file) return;
+  if (!(await ensureDBReady())) return;
   const text = await file.text();
   let data;
   try {
