@@ -31,9 +31,33 @@ jobs:
 
       - name: Build release (retry)
         run: |
-          npm run dist -- --publish=always || npm run dist -- --publish=always
+          npm run dist -- --publish=never || npm run dist -- --publish=never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           ELECTRON_GET_USE_PROXY: "true"
           ELECTRON_GET_USE_PROXY_FOR_HTTPS: "true"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibedstudio-${{ matrix.os }}
+          path: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.zip
+            dist/*.blockmap
+          if-no-files-found: ignore
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.zip
+            dist/*.blockmap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
