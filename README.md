@@ -37,6 +37,28 @@ Click the key icon in the header and paste your BytePlus API key. The key is sto
 ![Editor view](screenshots/editor.png)
 ![Video generation view](screenshots/videos.png)
 
+## Desktop App (One‑Click Installers)
+You can ship VibedStudio as a native app for macOS, Windows, and Linux.
+
+### Build locally
+```bash
+npm install
+npm run dist
+```
+
+Artifacts will appear in `dist/`:
+- macOS: `.dmg`
+- Windows: `.exe` (NSIS installer)
+- Linux: `.AppImage`
+
+### Create a GitHub Release
+Releases are generated automatically by GitHub Actions when you push a version tag:
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+The workflow builds installers for macOS, Windows, and Linux and publishes them on the GitHub Releases page.
+
 ## Project Structure
 - `index.html` — main UI shell
 - `style.css`, `editor.css`, `images.css` — styling
