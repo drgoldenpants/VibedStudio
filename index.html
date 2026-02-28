@@ -382,7 +382,7 @@
 
                 <!-- Media Library -->
                 <aside class="media-panel">
-                    <div class="media-panel-top">
+                        <div class="media-panel-top">
                         <div class="media-panel-title">
                             <svg viewBox="0 0 24 24" fill="none">
                                 <rect x="3" y="3" width="7" height="7" rx="1" stroke="currentColor"
@@ -405,6 +405,16 @@
                                 </svg>
                                 Video
                             </button>
+                            <button class="media-upload-btn" id="upload-image-btn">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor"
+                                        stroke-width="1.5" />
+                                    <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
+                                    <path d="M21 15L16 10L5 21" stroke="currentColor" stroke-width="1.5"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                Image
+                            </button>
                             <button class="media-upload-btn" id="upload-audio-btn">
                                 <svg viewBox="0 0 24 24" fill="none">
                                     <path d="M9 18V5L21 3V16" stroke="currentColor" stroke-width="1.5"
@@ -415,6 +425,7 @@
                                 Audio
                             </button>
                             <input type="file" id="upload-video-input" accept="video/*" hidden />
+                            <input type="file" id="upload-image-input" accept="image/*" hidden />
                             <input type="file" id="upload-audio-input" accept="audio/*" hidden />
                         </div>
                     </div>
@@ -445,10 +456,11 @@
 
                     <!-- Top: Preview + Toolbar -->
                     <div class="editor-top">
-                        <div class="preview-area">
-                            <div class="preview-wrapper">
-                                <video id="preview-video" playsinline></video>
-                                <div class="preview-empty" id="preview-empty">
+                            <div class="preview-area">
+                                <div class="preview-wrapper">
+                                    <video id="preview-video" playsinline></video>
+                                    <img id="preview-image" alt="Image preview" />
+                                    <div class="preview-empty" id="preview-empty">
                                     <svg viewBox="0 0 48 48" fill="none">
                                         <rect x="4" y="8" width="40" height="30" rx="3" stroke="currentColor"
                                             stroke-width="2" opacity="0.4" />
@@ -510,6 +522,10 @@
                                 Load Project
                             </button>
                             <input type="file" id="project-file-input" accept="application/json" hidden />
+                            <select class="tool-select" id="export-format" title="Export format">
+                                <option value="webm">Export WebM</option>
+                                <option value="mp4">Export MP4 (server)</option>
+                            </select>
                             <button class="tool-btn success" id="tool-export">
                                 <svg viewBox="0 0 24 24" fill="none">
                                     <path d="M12 2V17M12 17L7 12M12 17L17 12" stroke="currentColor" stroke-width="2"

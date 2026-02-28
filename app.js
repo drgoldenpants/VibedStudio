@@ -789,7 +789,18 @@ function pollJob(taskId) {
         // Fetch blob for offline storage (may fail due to CORS; that's OK)
         let blob = null;
         if (videoUrl) {
-          try { const r = await fetch(videoUrl); blob = await r.blob(); } catch (_) { }
+          try {
+            const r = await fetch(videoUrl);
+            blob = await r.blob();
+          } catch (_) {
+            // Fallback: use local proxy to bypass CORS and persist the video
+            if (location.protocol !== 'file:' && location.origin !== 'null') {
+              try {
+                const r = await fetch(`/api/video?url=${encodeURIComponent(videoUrl)}`);
+                blob = await r.blob();
+              } catch { }
+            }
+          }
         }
         saveVideoJob(job || { id: taskId, status: 'succeeded', videoUrl, prompt: '', model: state.model, ratio: state.ratio, duration: state.duration, timestamp: new Date() }, blob);
         window.syncMediaLibrary?.();

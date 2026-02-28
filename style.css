@@ -1089,6 +1089,19 @@ input[type="range"]:hover::-webkit-slider-thumb {
   border: 1px solid var(--border);
 }
 
+/* Editor toolbar select */
+.tool-select {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
 /* Status Bar */
 .status-bar {
   background: var(--bg-2);
