@@ -1,6 +1,6 @@
 {
   "name": "vibedstudio",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Local-first AI video studio for BytePlus generation and editing.",
   "author": "VibedStudio",
   "private": true,
@@ -12,7 +12,6 @@
     "dist": "electron-builder"
   },
   "dependencies": {
-    "express": "^4.19.2",
     "ffmpeg-static": "^5.2.0",
     "get-port": "^6.1.2"
   },

@@ -1,5 +1,5 @@
-const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const { spawn } = require('child_process');
@@ -10,16 +10,12 @@ const ffmpegPath = (() => {
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 
-function extractParams(req) {
-  const raw = (req.originalUrl || req.url || '').split('?')[1] || '';
-  let url = null;
-  let t = null;
-  if (!raw) return { url, t };
-  raw.split('&').forEach(part => {
-    if (part.startsWith('url=')) url = decodeURIComponent(part.slice(4));
-    if (part.startsWith('t=')) t = decodeURIComponent(part.slice(2));
-  });
-  return { url, t };
+function sendJson(res, status, payload) {
+  const body = Buffer.from(JSON.stringify(payload));
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Length', body.length);
+  res.end(body);
 }
 
 function proxyRequest(req, res, url) {
@@ -27,7 +23,7 @@ function proxyRequest(req, res, url) {
   try {
     target = new URL(url);
   } catch {
-    res.status(400).json({ error: 'invalid_url' });
+    sendJson(res, 400, { error: 'invalid_url' });
     return;
   }
   const client = target.protocol === 'https:' ? https : http;
@@ -39,7 +35,7 @@ function proxyRequest(req, res, url) {
   if (req.headers.range) headers.Range = req.headers.range;
 
   const upstream = client.request(target, { headers }, upstreamRes => {
-    res.status(upstreamRes.statusCode || 502);
+    res.statusCode = upstreamRes.statusCode || 502;
     const passHeaders = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
     passHeaders.forEach(h => {
       if (upstreamRes.headers[h]) res.setHeader(h, upstreamRes.headers[h]);
@@ -47,62 +43,132 @@ function proxyRequest(req, res, url) {
     upstreamRes.pipe(res);
   });
   upstream.on('error', err => {
-    res.status(502).json({ error: 'proxy_failed', message: err.message });
+    sendJson(res, 502, { error: 'proxy_failed', message: err.message });
   });
   upstream.end();
 }
 
-async function startServer() {
-  const app = express();
-  const rootDir = path.join(__dirname, '..');
-  app.use(express.static(rootDir));
+function getMimeType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.html': return 'text/html; charset=utf-8';
+    case '.css': return 'text/css; charset=utf-8';
+    case '.js': return 'application/javascript; charset=utf-8';
+    case '.json': return 'application/json; charset=utf-8';
+    case '.svg': return 'image/svg+xml';
+    case '.png': return 'image/png';
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg';
+    case '.webp': return 'image/webp';
+    case '.ico': return 'image/x-icon';
+    case '.mp4': return 'video/mp4';
+    case '.webm': return 'video/webm';
+    case '.wav': return 'audio/wav';
+    case '.mp3': return 'audio/mpeg';
+    default: return 'application/octet-stream';
+  }
+}
 
-  app.get('/api/video', (req, res) => {
-    const { url } = extractParams(req);
-    if (!url) return res.status(400).json({ error: 'missing_url' });
-    proxyRequest(req, res, url);
-  });
+function serveStatic(req, res, rootDir, urlPath) {
+  let safePath = urlPath;
+  try {
+    safePath = decodeURIComponent(urlPath);
+  } catch {
+    sendJson(res, 400, { error: 'bad_path' });
+    return;
+  }
 
-  app.get('/api/thumb', (req, res) => {
-    if (!ffmpegPath) {
-      return res.status(501).json({
-        error: 'ffmpeg_not_found',
-        message: 'ffmpeg is required on the server to generate thumbnails.',
-      });
+  const relPath = safePath === '/' ? '/index.html' : safePath;
+  const fsPath = path.normalize(path.join(rootDir, relPath));
+  if (!fsPath.startsWith(rootDir)) {
+    sendJson(res, 403, { error: 'forbidden' });
+    return;
+  }
+
+  fs.stat(fsPath, (err, stat) => {
+    if (err || !stat.isFile()) {
+      res.statusCode = 404;
+      res.end('Not Found');
+      return;
     }
-    const { url, t } = extractParams(req);
-    if (!url) return res.status(400).json({ error: 'missing_url' });
-
-    const seek = Number.isFinite(Number(t)) ? Math.max(0.05, Number(t)) : 0.1;
-    const args = [
-      '-hide_banner',
-      '-loglevel', 'error',
-      '-user_agent', USER_AGENT,
-      '-ss', String(seek),
-      '-i', url,
-      '-frames:v', '1',
-      '-f', 'image2',
-      '-vcodec', 'png',
-      'pipe:1',
-    ];
-    const ff = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const chunks = [];
-    let stderr = '';
-    ff.stdout.on('data', chunk => chunks.push(chunk));
-    ff.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    ff.on('close', code => {
-      if (code === 0 && chunks.length) {
-        const buf = Buffer.concat(chunks);
-        res.setHeader('Content-Type', 'image/png');
-        res.end(buf);
-      } else {
-        res.status(502).json({ error: 'thumb_failed', message: stderr || 'ffmpeg failed' });
-      }
+    res.statusCode = 200;
+    res.setHeader('Content-Type', getMimeType(fsPath));
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    const stream = fs.createReadStream(fsPath);
+    stream.on('error', () => {
+      res.statusCode = 500;
+      res.end('Read Error');
     });
+    stream.pipe(res);
+  });
+}
+
+async function startServer() {
+  const rootDir = path.join(__dirname, '..');
+  const server = http.createServer((req, res) => {
+    const method = req.method || 'GET';
+    if (method !== 'GET' && method !== 'HEAD') {
+      res.statusCode = 405;
+      res.end('Method Not Allowed');
+      return;
+    }
+
+    const parsed = new URL(req.url || '/', 'http://localhost');
+    if (parsed.pathname === '/api/video') {
+      const url = parsed.searchParams.get('url');
+      if (!url) return sendJson(res, 400, { error: 'missing_url' });
+      proxyRequest(req, res, url);
+      return;
+    }
+
+    if (parsed.pathname === '/api/thumb') {
+      if (!ffmpegPath) {
+        return sendJson(res, 501, {
+          error: 'ffmpeg_not_found',
+          message: 'ffmpeg is required on the server to generate thumbnails.',
+        });
+      }
+      const url = parsed.searchParams.get('url');
+      const t = parsed.searchParams.get('t');
+      if (!url) return sendJson(res, 400, { error: 'missing_url' });
+
+      const seek = Number.isFinite(Number(t)) ? Math.max(0.05, Number(t)) : 0.1;
+      const args = [
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-user_agent', USER_AGENT,
+        '-ss', String(seek),
+        '-i', url,
+        '-frames:v', '1',
+        '-f', 'image2',
+        '-vcodec', 'png',
+        'pipe:1',
+      ];
+      const ff = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const chunks = [];
+      let stderr = '';
+      ff.stdout.on('data', chunk => chunks.push(chunk));
+      ff.stderr.on('data', chunk => { stderr += chunk.toString(); });
+      ff.on('close', code => {
+        if (code === 0 && chunks.length) {
+          const buf = Buffer.concat(chunks);
+          res.setHeader('Content-Type', 'image/png');
+          res.end(buf);
+        } else {
+          sendJson(res, 502, { error: 'thumb_failed', message: stderr || 'ffmpeg failed' });
+        }
+      });
+      return;
+    }
+
+    serveStatic(req, res, rootDir, parsed.pathname);
   });
 
   const port = await getPort({ port: [8787, 8788, 8789, 0] });
-  await new Promise(resolve => app.listen(port, resolve));
+  await new Promise(resolve => server.listen(port, resolve));
   return port;
 }
 
