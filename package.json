@@ -19,6 +19,7 @@
     "electron-builder": "^24.13.3"
   },
   "build": {
+    "icon": "build/icon.png",
     "appId": "com.vibedstudio.app",
     "productName": "VibedStudio",
     "directories": {
@@ -33,17 +34,20 @@
       "!**/test/**"
     ],
     "mac": {
+      "icon": "build/icon.png",
       "target": [
         "dmg"
       ],
       "category": "public.app-category.video"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
       ]
     },
     "linux": {
+      "icon": "build/icon.png",
       "target": [
         "AppImage"
       ]
