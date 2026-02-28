@@ -11,6 +11,9 @@ IMAGE_PROXY_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3/images/generat
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith('/api/thumb'):
+            self.handle_thumb()
+            return
         if self.path.startswith('/api/video'):
             self.handle_video_proxy()
             return
@@ -162,8 +165,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def handle_video_proxy(self):
         parsed = urllib.parse.urlparse(self.path)
-        qs = urllib.parse.parse_qs(parsed.query)
-        url = qs.get('url', [None])[0]
+        url = None
+        if parsed.query:
+            for part in parsed.query.split('&'):
+                if part.startswith('url='):
+                    url = urllib.parse.unquote(part[4:])
+                    break
         if not url:
             self.send_response(400)
             self.send_header('Content-Type', 'application/json')
@@ -182,6 +189,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
         req = urllib.request.Request(url, method='GET')
+        # Some signed URLs reject missing/unknown user agents.
+        req.add_header('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36')
+        req.add_header('Accept', '*/*')
+        req.add_header('Accept-Encoding', 'identity')
         range_hdr = self.headers.get('Range')
         if range_hdr:
             req.add_header('Range', range_hdr)
@@ -202,21 +213,104 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if ar:
                     self.send_header('Accept-Ranges', ar)
                 self.end_headers()
-                shutil.copyfileobj(resp, self.wfile)
+                try:
+                    shutil.copyfileobj(resp, self.wfile)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except urllib.error.HTTPError as e:
-            self.send_response(e.code)
-            ct = e.headers.get('Content-Type')
-            if ct:
-                self.send_header('Content-Type', ct)
-            self.end_headers()
-            self.wfile.write(e.read())
+            try:
+                self.send_response(e.code)
+                ct = e.headers.get('Content-Type')
+                if ct:
+                    self.send_header('Content-Type', ct)
+                self.end_headers()
+                self.wfile.write(e.read())
+            except (BrokenPipeError, ConnectionResetError):
+                return
         except Exception as e:
-            self.send_response(502)
+            try:
+                self.send_response(502)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'error': 'proxy_failed',
+                    'message': str(e),
+                }).encode('utf-8'))
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+    def handle_thumb(self):
+        if shutil.which('ffmpeg') is None:
+            self.send_response(501)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({
-                'error': 'proxy_failed',
-                'message': str(e),
+                'error': 'ffmpeg_not_found',
+                'message': 'ffmpeg is required on the server to generate thumbnails.',
+            }).encode('utf-8'))
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        url = None
+        t = None
+        if parsed.query:
+            for part in parsed.query.split('&'):
+                if part.startswith('url='):
+                    url = urllib.parse.unquote(part[4:])
+                elif part.startswith('t='):
+                    t = urllib.parse.unquote(part[2:])
+        if not url:
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'missing_url'}).encode('utf-8'))
+            return
+        try:
+            target = urllib.parse.urlparse(url)
+            if target.scheme not in ('http', 'https'):
+                raise ValueError('invalid_url')
+        except Exception:
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'invalid_url'}).encode('utf-8'))
+            return
+        ts = '0.1'
+        try:
+            if t is not None:
+                float(t)
+                ts = t
+        except Exception:
+            pass
+        cmd = [
+            'ffmpeg', '-ss', ts, '-i', url,
+            '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', '-'
+        ]
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+            if proc.returncode != 0:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'error': 'ffmpeg_failed',
+                    'message': proc.stderr.decode('utf-8', 'ignore')[-2000:],
+                }).encode('utf-8'))
+                return
+            data = proc.stdout
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except subprocess.TimeoutExpired:
+            self.send_response(504)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': 'ffmpeg_timeout',
+                'message': 'ffmpeg timed out while generating thumbnail.',
             }).encode('utf-8'))
 
     def log_message(self, fmt, *args):

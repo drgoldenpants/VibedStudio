@@ -5,6 +5,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Local Vibed Studio</title>
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 120'%3E%3Cpolygon points='12,14 46,4 46,106 12,116' fill='%232f5aa8'/%3E%3Cpolygon points='58,38 86,28 86,94 58,104' fill='%234a8cff'/%3E%3Cpolygon points='102,30 126,22 126,90 102,98' fill='%2318b6c2'/%3E%3Cpolygon points='134,12 158,4 158,106 134,116' fill='%237fe9db'/%3E%3C/svg%3E" />
     <meta name="description" content="Generate and edit AI videos using BytePlus VibedStudio." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -109,6 +111,13 @@
             <main class="main-layout">
                 <!-- Left Panel: Controls -->
                 <aside class="control-panel">
+                    <button class="control-hide-btn" id="toggle-controls" title="Hide controls" aria-label="Hide controls">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path d="M21 12H9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            <path d="M13 8L9 12L13 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <rect x="17" y="6" width="4" height="12" rx="2" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                    </button>
 
                     <section class="panel-section" id="section-model">
                         <h3 class="section-title">
@@ -133,17 +142,17 @@
                                 <div class="model-name">Seedance 1.0 Pro</div>
                                 <div class="model-desc">T2V · I2V · High quality</div>
                             </label>
-                            <label class="model-card" data-model="seedance-1-0-lite-t2v-250428">
-                                <input type="radio" name="model" value="seedance-1-0-lite-t2v-250428" hidden />
-                                <div class="model-badge lite">LITE</div>
-                                <div class="model-name">Seedance 1.0 Lite T2V</div>
-                                <div class="model-desc">Text-to-Video · Fast</div>
+                            <label class="model-card" data-model="seedance-1-0-pro-fast-251015">
+                                <input type="radio" name="model" value="seedance-1-0-pro-fast-251015" hidden />
+                                <div class="model-badge pro">PRO</div>
+                                <div class="model-name">Seedance 1.0 Pro Fast</div>
+                                <div class="model-desc">T2V · I2V · First/Last</div>
                             </label>
-                            <label class="model-card" data-model="seedance-1-0-lite-i2v-250428">
-                                <input type="radio" name="model" value="seedance-1-0-lite-i2v-250428" hidden />
+                            <label class="model-card" data-model="seedance-1-0-lite">
+                                <input type="radio" name="model" value="seedance-1-0-lite" hidden />
                                 <div class="model-badge lite">LITE</div>
-                                <div class="model-name">Seedance 1.0 Lite I2V</div>
-                                <div class="model-desc">Image-to-Video · Fast</div>
+                                <div class="model-name">Seedance 1.0 Lite</div>
+                                <div class="model-desc">Text &amp; Image · Fast</div>
                             </label>
                         </div>
                     </section>
@@ -168,9 +177,26 @@
                                 <button class="ratio-btn selected" data-ratio="16:9" id="ratio-16-9">
                                     <span class="ratio-icon landscape-icon"></span>16:9
                                 </button>
-                                <button class="ratio-btn" data-ratio="9:16" id="ratio-9-16">
-                                    <span class="ratio-icon portrait-icon"></span>9:16
+                                <button class="ratio-btn" data-ratio="21:9" id="ratio-21-9">
+                                    <span class="ratio-icon landscape-icon"></span>21:9
                                 </button>
+                                <button class="ratio-btn" data-ratio="4:3" id="ratio-4-3">
+                                    <span class="ratio-icon landscape-icon"></span>4:3
+                                </button>
+                                <button class="ratio-btn" data-ratio="1:1" id="ratio-1-1">
+                                    <span class="ratio-icon square-icon"></span>1:1
+                                </button>
+                                <button class="ratio-btn" data-ratio="3:4" id="ratio-3-4">
+                                    <span class="ratio-icon portrait-icon"></span>3:4
+                                </button>
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Resolution</label>
+                            <div class="resolution-grid" id="resolution-grid">
+                                <button class="resolution-btn" data-resolution="480p">480p</button>
+                                <button class="resolution-btn selected" data-resolution="720p">720p</button>
+                                <button class="resolution-btn" data-resolution="1080p">1080p</button>
                             </div>
                         </div>
                         <div class="input-group">
@@ -179,9 +205,19 @@
                                 <span class="label-value" id="duration-display">5s</span>
                             </label>
                             <div class="slider-wrap">
-                                <input type="range" id="duration-slider" class="slider" min="5" max="10" step="5"
+                                <input type="range" id="duration-slider" class="slider" min="2" max="12" step="1"
                                     value="5" />
-                                <div class="slider-ticks"><span>5s</span><span>10s</span></div>
+                                <div class="slider-ticks">
+                                    <span id="duration-min-label">2s</span>
+                                    <span id="duration-max-label">12s</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Service Tier</label>
+                            <div class="tier-row" id="service-tier-row">
+                                <button class="tier-btn selected" data-tier="flex">flex</button>
+                                <button class="tier-btn" data-tier="default">fast</button>
                             </div>
                         </div>
                         <div class="toggle-row">
@@ -203,6 +239,36 @@
                                     <input type="checkbox" id="watermark" /><span class="track"></span>
                                 </label>
                             </div>
+                        </div>
+                        <div class="toggle-row">
+                            <div class="toggle-item">
+                                <div class="toggle-info">
+                                    <span class="toggle-label">Extendable</span>
+                                    <span class="toggle-desc">Enable one-click extensions</span>
+                                </div>
+                                <label class="toggle" for="return-last-frame">
+                                    <input type="checkbox" id="return-last-frame" checked /><span class="track"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="toggle-row">
+                            <div class="toggle-item">
+                                <div class="toggle-info">
+                                    <span class="toggle-label">Camera Fixed</span>
+                                    <span class="toggle-desc">Lock camera movement</span>
+                                </div>
+                                <label class="toggle" for="camera-fixed">
+                                    <input type="checkbox" id="camera-fixed" /><span class="track"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="seed-input">
+                                Seed
+                                <span class="label-value" id="seed-display">Random</span>
+                            </label>
+                            <input class="input" type="number" id="seed-input" min="0" step="1"
+                                placeholder="Optional" />
                         </div>
                     </section>
 
@@ -252,65 +318,121 @@
                         <pre class="code-preview" id="json-response"><code>{}</code></pre>
                     </section>
                 </aside>
+                <button class="controls-tab" id="controls-tab" title="Show controls" aria-label="Show controls">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M9 6L15 12L9 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
 
                 <!-- Right Panel: Prompt + Output -->
                 <div class="content-panel">
                     <section class="prompt-section">
-                        <div class="prompt-header">
-                            <h2 class="prompt-title">Generate Video</h2>
-                            <div class="mode-tabs">
-                                <button class="mode-tab active" id="tab-text" data-mode="text">
-                                    <svg viewBox="0 0 24 24" fill="none">
-                                        <path d="M4 6H20M4 12H14M4 18H10" stroke="currentColor" stroke-width="2"
-                                            stroke-linecap="round" />
-                                    </svg>
-                                    Text to Video
-                                </button>
-                                <button class="mode-tab" id="tab-image" data-mode="image">
-                                    <svg viewBox="0 0 24 24" fill="none">
-                                        <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor"
-                                            stroke-width="2" />
-                                        <circle cx="8.5" cy="8.5" r="1.5" stroke="currentColor" stroke-width="2" />
-                                        <path d="M21 15L16 10L5 21" stroke="currentColor" stroke-width="2"
-                                            stroke-linecap="round" />
-                                    </svg>
-                                    Image to Video
-                                </button>
-                            </div>
-                        </div>
-                        <div class="prompt-body" id="text-mode">
-                            <div class="textarea-wrap">
-                                <textarea id="text-prompt" class="prompt-textarea"
-                                    placeholder="Describe your video in detail…&#10;&#10;e.g. A cinematic aerial shot of a glowing city at night, rain-soaked streets reflecting neon lights, slow camera drift, hyper-realistic…"
-                                    maxlength="4096"></textarea>
-                                <div class="prompt-meta-info">
-                                    <span class="char-count"><span id="char-count">0</span>/4096</span>
+                        <div class="prompt-surface">
+                            <div class="prompt-top">
+                                <div class="prompt-frames">
+                                    <div class="reference-header" id="reference-header">
+                                        <div class="reference-deck" id="reference-deck"></div>
+                                        <div class="reference-controls">
+                                            <button class="reference-add-btn" id="reference-add" type="button">
+                                                + Add references
+                                            </button>
+                                            <span class="reference-hint">Up to 4 images</span>
+                                        </div>
+                                        <input type="file" id="reference-input" accept="image/*" multiple hidden />
+                                    </div>
+                                    <button class="frame-card" type="button" id="frame-first">
+                                        <img class="frame-thumb hidden" id="frame-first-thumb" alt="First frame" />
+                                        <span class="frame-remove hidden" id="frame-first-remove" role="button" aria-label="Remove first frame">✕</span>
+                                        <span class="frame-plus">+</span>
+                                        <span class="frame-label">First frame</span>
+                                    </button>
+                                    <div class="frame-arrow">→</div>
+                                    <button class="frame-card" type="button" id="frame-last">
+                                        <img class="frame-thumb hidden" id="frame-last-thumb" alt="Last frame" />
+                                        <span class="frame-remove hidden" id="frame-last-remove" role="button" aria-label="Remove last frame">✕</span>
+                                        <span class="frame-plus">+</span>
+                                        <span class="frame-label">Last frame</span>
+                                    </button>
+                                    <input type="file" id="first-frame-input" accept="image/*" hidden />
+                                    <input type="file" id="last-frame-input" accept="image/*" hidden />
+                                </div>
+                                <div class="prompt-input">
+                                    <div class="prompt-tabs">
+                                        <button class="prompt-tab active" id="tab-text" type="button">T2V/I2V</button>
+                                        <button class="prompt-tab" id="tab-reference" type="button">Reference</button>
+                                    </div>
+                                    <div class="prompt-body" id="text-mode">
+                                        <div class="textarea-wrap">
+                                            <textarea id="text-prompt" class="prompt-textarea"
+                                                placeholder="Describe the scene, motion, and camera style you want. Example: A 3D boy skating through a sunny park, slow dolly-in, natural light…"
+                                                maxlength="4096"></textarea>
+                                            <div class="prompt-meta-info">
+                                                <span class="token-count"><span id="text-token-count">—</span> tok</span>
+                                                <span class="char-count"><span id="char-count">0</span>/4096</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="prompt-body hidden" id="image-mode">
+                                        <div class="image-drop-zone" id="image-drop-zone">
+                                            <input type="file" id="image-file" accept="image/*" hidden />
+                                            <div class="drop-content" id="drop-content">
+                                                <svg viewBox="0 0 24 24" fill="none">
+                                                    <path d="M12 15V3M12 3L8 7M12 3L16 7" stroke="currentColor"
+                                                        stroke-width="2" stroke-linecap="round"
+                                                        stroke-linejoin="round" />
+                                                    <path
+                                                        d="M3 16V19C3 20.105 3.895 21 5 21H19C20.105 21 21 20.105 21 19V16"
+                                                        stroke="currentColor" stroke-width="2"
+                                                        stroke-linecap="round" />
+                                                </svg>
+                                                <p>Drop image here or <span class="link-text">browse</span></p>
+                                                <p class="drop-hint">Supports JPG, PNG, WebP</p>
+                                            </div>
+                                            <button class="remove-img hidden" id="remove-image">✕</button>
+                                        </div>
+                                        <div class="textarea-wrap" style="margin-top:12px;">
+                                            <textarea id="image-prompt" class="prompt-textarea" style="min-height:80px;"
+                                                placeholder="Optional: Describe how you want the image to animate…"
+                                                maxlength="4096"></textarea>
+                                            <div class="prompt-meta-info">
+                                                <span class="token-count"><span id="image-token-count">—</span> tok</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="prompt-body hidden" id="reference-mode">
+                                        <div class="textarea-wrap reference-wrap">
+                                            <div id="reference-prompt-editor" class="prompt-editor" contenteditable="true"
+                                                data-placeholder="Use @ to reference images. Example: A boy from @Image 1 with a corgi from @Image 2, in a sunny park."></div>
+                                            <div class="prompt-meta-info">
+                                                <span class="token-count"><span id="ref-token-count">—</span> tok</span>
+                                                <span class="char-count"><span id="ref-char-count">0</span>/4096</span>
+                                            </div>
+                                            <div class="mention-menu hidden" id="reference-mention-menu"></div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                        <div class="prompt-body hidden" id="image-mode">
-                            <div class="image-drop-zone" id="image-drop-zone">
-                                <input type="file" id="image-file" accept="image/*" hidden />
-                                <div class="drop-content" id="drop-content">
-                                    <svg viewBox="0 0 24 24" fill="none">
-                                        <path d="M12 15V3M12 3L8 7M12 3L16 7" stroke="currentColor" stroke-width="2"
-                                            stroke-linecap="round" stroke-linejoin="round" />
-                                        <path d="M3 16V19C3 20.105 3.895 21 5 21H19C20.105 21 21 20.105 21 19V16"
-                                            stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                                    </svg>
-                                    <p>Drop image here or <span class="link-text">browse</span></p>
-                                    <p class="drop-hint">Supports JPG, PNG, WebP</p>
-                                </div>
-                                <img id="image-preview-thumb" class="hidden" alt="Preview" />
-                                <button class="remove-img hidden" id="remove-image">✕</button>
-                            </div>
-                            <div class="textarea-wrap" style="margin-top:12px;">
-                                <textarea id="image-prompt" class="prompt-textarea" style="min-height:80px;"
-                                    placeholder="Optional: Describe how you want the image to animate…"
-                                    maxlength="4096"></textarea>
+                        <div class="prompt-toolbar">
+                            <button class="prompt-chip" id="draft-chip" type="button" aria-pressed="false">Draft</button>
+                            <span class="prompt-chip info" id="pill-model">Model</span>
+                            <span class="prompt-chip info" id="pill-frames">First &amp; last frames</span>
+                            <span class="prompt-chip info" id="pill-ratio">16:9</span>
+                            <span class="prompt-chip info" id="pill-duration">5s</span>
+                            <span class="prompt-chip info" id="pill-tokens">Tokens —</span>
+                            <span class="prompt-chip info" id="pill-cost">Cost —</span>
+                            <div class="currency-control">
+                                <select id="currency-select" class="currency-select" aria-label="Currency">
+                                    <option value="USD" selected>USD</option>
+                                    <option value="EUR">EUR</option>
+                                    <option value="GBP">GBP</option>
+                                    <option value="JPY">JPY</option>
+                                    <option value="AUD">AUD</option>
+                                    <option value="CAD">CAD</option>
+                                </select>
                             </div>
                         </div>
-                        <div class="generate-bar">
+                    </div>
+                    <div class="generate-bar">
                             <button class="generate-btn" id="generate-btn">
                                 <span class="btn-icon"><svg viewBox="0 0 24 24" fill="none">
                                         <polygon points="5,3 19,12 5,21" fill="currentColor" />
@@ -330,12 +452,6 @@
                             <div class="status-progress">
                                 <div class="progress-bar" id="progress-bar"></div>
                             </div>
-                        </div>
-                        <div class="queue-panel hidden" id="queue-panel">
-                            <div class="queue-panel-header">
-                                <span class="spinner sm purple"></span><span>In Progress</span>
-                            </div>
-                            <div class="queue-list" id="queue-list"></div>
                         </div>
                         <div class="video-output-header">
                             <span class="video-output-title">Generated Videos</span>
@@ -430,7 +546,7 @@
                         </div>
                     </div>
                     <div class="media-sections">
-                        <div>
+                        <div class="media-section">
                             <div class="media-section-header">
                                 <span class="media-section-title">Uploads</span>
                                 <span class="media-count-badge" id="media-up-count">0</span>
@@ -439,10 +555,17 @@
                                 <div class="media-empty-hint">Upload video or audio files above</div>
                             </div>
                         </div>
-                        <div>
+                        <div class="media-section media-section--grow">
                             <div class="media-section-header">
                                 <span class="media-section-title">Generated Videos</span>
                                 <span class="media-count-badge" id="media-gen-count">0</span>
+                            </div>
+                            <div class="media-section-controls">
+                                <div class="media-pager" id="media-gen-pager">
+                                    <button class="media-page-btn" id="media-gen-prev" disabled>Previous</button>
+                                    <span class="media-page-info" id="media-gen-info">0 total</span>
+                                    <button class="media-page-btn" id="media-gen-next" disabled>Next</button>
+                                </div>
                             </div>
                             <div id="media-generated" class="media-list">
                                 <div class="media-empty-hint">Generate videos in the Generate tab to see them here</div>

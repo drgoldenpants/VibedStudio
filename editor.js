@@ -13,7 +13,7 @@ const editorState = {
         { id: 'a2', type: 'audio', name: 'Audio 2', segments: [] },
     ],
     pxPerSec: 80,
-    timelineDur: 60,
+    timelineDur: 300,
     currentTime: 0,
     playing: false,
     rafId: null,
@@ -35,9 +35,12 @@ const editorState = {
     previewType: null,
     previewOpacity: 1,
     playheadMenuEl: null,
+    generatedPage: 1,
+    generatedPerPage: 12,
 };
 
 let editorInited = false;
+const TIMELINE_MIN_SECONDS = 300;
 const TRANSITION_DUR = 0.5;
 
 // ── DOM helpers ───────────────────────────────────────────────
@@ -100,6 +103,20 @@ function initEditor() {
     eq('upload-video-input').addEventListener('change', e => handleUpload(e, 'video'));
     eq('upload-image-input').addEventListener('change', e => handleUpload(e, 'image'));
     eq('upload-audio-input').addEventListener('change', e => handleUpload(e, 'audio'));
+    const prevBtn = eq('media-gen-prev');
+    const nextBtn = eq('media-gen-next');
+    if (prevBtn && nextBtn) {
+        prevBtn.addEventListener('click', () => {
+            if (editorState.generatedPage > 1) {
+                editorState.generatedPage--;
+                renderMediaList();
+            }
+        });
+        nextBtn.addEventListener('click', () => {
+            editorState.generatedPage++;
+            renderMediaList();
+        });
+    }
     const playhead = eq('tl-playhead');
     if (playhead) {
         playhead.addEventListener('contextmenu', e => {
@@ -181,6 +198,8 @@ function syncMediaLibrary() {
         if (existing) {
             if (existing.src !== job.videoUrl) existing.src = job.videoUrl;
             existing.proxySrc = maybeProxySrc(job.videoUrl);
+            if (job.thumbDataUrl) existing.thumbDataUrl = job.thumbDataUrl;
+            existing.thumbDisabled = !!job.thumbDisabled;
             editorState.tracks.forEach(t => {
                 t.segments.forEach(s => {
                     if (s.mediaId === job.id && s.src !== job.videoUrl) s.src = job.videoUrl;
@@ -193,6 +212,8 @@ function syncMediaLibrary() {
             name: (job.prompt || 'Generated Video').slice(0, 30),
             src: job.videoUrl,
             proxySrc: maybeProxySrc(job.videoUrl),
+            thumbDataUrl: job.thumbDataUrl || null,
+            thumbDisabled: !!job.thumbDisabled,
             type: 'video',
             duration: job.duration || 5,
             source: 'generated',
@@ -200,10 +221,14 @@ function syncMediaLibrary() {
     });
     renderMediaList();
 }
+window.syncMediaLibrary = syncMediaLibrary;
 
 function renderMediaList() {
     const genEl = eq('media-generated');
     const upEl = eq('media-uploads');
+    const genInfo = eq('media-gen-info');
+    const genPrev = eq('media-gen-prev');
+    const genNext = eq('media-gen-next');
     editorState.mediaItems.forEach(m => {
         if (m.source) return;
         if (String(m.id || '').startsWith('upload-')) m.source = 'upload';
@@ -216,13 +241,26 @@ function renderMediaList() {
     eq('media-gen-count').textContent = generated.length;
     eq('media-up-count').textContent = uploads.length;
 
-    genEl.innerHTML = generated.length === 0
+    const visibleGenerated = generated.filter(m => !m.thumbDisabled);
+    const totalGenerated = visibleGenerated.length;
+    const perPage = Math.max(4, editorState.generatedPerPage || 12);
+    const totalPages = Math.max(1, Math.ceil(totalGenerated / perPage));
+    if (editorState.generatedPage > totalPages) editorState.generatedPage = totalPages;
+    if (editorState.generatedPage < 1) editorState.generatedPage = 1;
+    const start = (editorState.generatedPage - 1) * perPage;
+    const pagedGenerated = visibleGenerated.slice(start, start + perPage);
+
+    if (genInfo) genInfo.textContent = `${totalGenerated} total`;
+    if (genPrev) genPrev.disabled = editorState.generatedPage <= 1;
+    if (genNext) genNext.disabled = editorState.generatedPage >= totalPages;
+
+    genEl.innerHTML = totalGenerated === 0
         ? '<div class="media-empty-hint">Generate videos in the Generate tab to see them here</div>'
-        : generated.map(mediaItemHTML).join('');
+        : pagedGenerated.map(m => mediaItemHTML(m, { compact: true })).join('');
 
     upEl.innerHTML = uploads.length === 0
         ? '<div class="media-empty-hint">Upload video or audio files above</div>'
-        : uploads.map(mediaItemHTML).join('');
+        : uploads.map(m => mediaItemHTML(m, { compact: false })).join('');
 
     document.querySelectorAll('.media-item[data-mid]').forEach(el => {
         el.setAttribute('draggable', 'true');
@@ -238,7 +276,18 @@ function renderMediaList() {
     document.querySelectorAll('.media-thumb video').forEach(v => {
         if (v.dataset.bound === '1') return;
         v.dataset.bound = '1';
-        v.addEventListener('error', () => {
+        v.addEventListener('error', async () => {
+            const mediaId = v.closest('.media-item')?.dataset?.mid;
+            if (mediaId && window.refreshJobVideoUrl) {
+                const fresh = await window.refreshJobVideoUrl(mediaId, { silent: true });
+                if (fresh) {
+                    const proxy = maybeProxySrc(fresh);
+                    v.dataset.proxy = proxy || '';
+                    v.src = `${fresh}#t=0.1`;
+                    try { v.load(); } catch { }
+                    return;
+                }
+            }
             const proxy = v.dataset.proxy;
             if (proxy && v.src !== proxy) {
                 v.src = proxy;
@@ -246,29 +295,50 @@ function renderMediaList() {
             }
         });
     });
+
+    document.querySelectorAll('.media-item.compact .media-thumb img').forEach(img => {
+        if (img.dataset.bound === '1') return;
+        img.dataset.bound = '1';
+        img.addEventListener('error', () => {
+            const item = img.closest('.media-item');
+            if (item) item.remove();
+        });
+    });
 }
 
-function mediaItemHTML(m) {
+function mediaItemHTML(m, { compact = false } = {}) {
     const videoIcon = `<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="1.5"/><polygon points="10,8 10,16 17,12" fill="currentColor" opacity="0.8"/></svg>`;
     const audioIcon = `<svg viewBox="0 0 24 24" fill="none"><path d="M9 18V5L21 3V16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="1.5"/></svg>`;
 
     let thumbInner = `<div class="media-thumb-icon">${m.type === 'video' ? videoIcon : audioIcon}</div>`;
     if (m.src) {
         if (m.type === 'video') {
-            const proxy = m.proxySrc || maybeProxySrc(m.src) || '';
-            const proxyAttr = proxy ? ` data-proxy="${escH(proxy)}"` : '';
-            thumbInner = `<video src="${m.src}#t=0.1" preload="metadata" muted playsinline${proxyAttr}></video>`;
+            if (compact && m.thumbDataUrl) {
+                const safeThumb = escH(m.thumbDataUrl);
+                thumbInner = `<img src="${safeThumb}" alt="${escH(m.name)}" />`;
+            } else {
+                const proxy = m.proxySrc || maybeProxySrc(m.src) || '';
+                const proxyAttr = proxy ? ` data-proxy="${escH(proxy)}"` : '';
+                const safeSrc = escH(m.src);
+                thumbInner = `<video src="${safeSrc}#t=0.1" preload="metadata" muted playsinline${proxyAttr}></video>`;
+            }
         }
-        else if (m.type === 'image') thumbInner = `<img src="${m.src}" alt="${escH(m.name)}" />`;
+        else if (m.type === 'image') {
+            const safeSrc = escH(m.src);
+            thumbInner = `<img src="${safeSrc}" alt="${escH(m.name)}" />`;
+        }
     }
 
-    return `
-    <div class="media-item" data-mid="${m.id}">
-      <div class="media-thumb">${thumbInner}</div>
+    const info = compact ? '' : `
       <div class="media-info">
         <div class="media-name">${escH(m.name)}</div>
         <div class="media-meta">${m.type.toUpperCase()} • ${formatDur(m.duration || 0)}</div>
-      </div>
+      </div>`;
+    const compactClass = compact ? ' compact' : '';
+    return `
+    <div class="media-item${compactClass}" data-mid="${m.id}">
+      <div class="media-thumb">${thumbInner}</div>
+      ${info}
     </div>`;
 }
 
@@ -538,7 +608,8 @@ async function loadProject(file) {
     editorState.transitions = Array.isArray(data.transitions) ? data.transitions : [];
 
     const maxEnd = editorState.tracks.flatMap(t => t.segments).reduce((m, s) => Math.max(m, (s.start || 0) + (s.duration || 0)), 0);
-    editorState.timelineDur = data.timelineDur || Math.max(10, maxEnd + 2);
+    const baseDur = Math.max(TIMELINE_MIN_SECONDS, maxEnd + 2);
+    editorState.timelineDur = Math.max(data.timelineDur || 0, baseDur);
     editorState.pxPerSec = data.pxPerSec || editorState.pxPerSec;
     editorState.currentTime = 0;
     editorState.selectedSegId = null;
@@ -599,7 +670,7 @@ function updateTimelineDur() {
         .flatMap(t => t.segments)
         .filter(s => s.mediaType === 'video' || s.mediaType === 'image');
     const maxEnd = videoSegs.reduce((m, s) => Math.max(m, (s.start || 0) + (s.duration || 0)), 0);
-    const next = maxEnd > 0 ? Math.max(1, maxEnd) : 60;
+    const next = maxEnd > 0 ? Math.max(TIMELINE_MIN_SECONDS, maxEnd) : TIMELINE_MIN_SECONDS;
     if (Math.abs(next - editorState.timelineDur) > 0.01) {
         editorState.timelineDur = next;
         if (editorState.currentTime > next) editorState.currentTime = next;
@@ -927,7 +998,6 @@ function showSegmentMenu(x, y, seg) {
         if (action === 'extract-audio') {
             extractAudioFromSegment(seg).catch(err => {
                 console.warn('Audio extraction failed:', err);
-                showToast('Audio extraction failed', 'error', '❌');
             });
         }
         hideSegmentMenu();
@@ -1092,59 +1162,108 @@ async function captureVideoFrameAtTime(src, time) {
 async function extractAudioFromSegment(seg) {
     if (!seg?.src) return;
     showToast('Extracting audio…', 'info', '🎵');
-    const src = getExportSrc(seg.src);
-    const res = await fetch(src);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const buf = await res.arrayBuffer();
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const audioBuf = await ctx.decodeAudioData(buf.slice(0));
-    const wav = audioBufferToWav(audioBuf);
-    const blob = new Blob([wav], { type: 'audio/wav' });
-    const url = URL.createObjectURL(blob);
-    const media = {
-        id: 'audio-' + Date.now(),
-        name: (seg.name || 'Extracted Audio').slice(0, 40),
-        src: url,
-        type: 'audio',
-        duration: audioBuf.duration || seg.duration || 5,
-        source: 'generated',
-    };
-    editorState.mediaItems.push(media);
-    renderMediaList();
-    placeAudioOnTrack(media);
-    showToast('Audio extracted and placed on a track', 'success', '🎵');
+    try {
+        const src = getExportSrc(seg.src);
+        const res = await fetch(src);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = await res.arrayBuffer();
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const audioBuf = await ctx.decodeAudioData(buf.slice(0));
+        if (!audioBuf || !isFinite(audioBuf.duration) || audioBuf.duration <= 0) {
+            throw new Error('no_audio');
+        }
+        const wav = audioBufferToWav(audioBuf);
+        const blob = new Blob([wav], { type: 'audio/wav' });
+        const url = URL.createObjectURL(blob);
+        const media = {
+            id: 'audio-' + Date.now(),
+            name: (seg.name || 'Extracted Audio').slice(0, 40),
+            src: url,
+            type: 'audio',
+            duration: seg.duration || audioBuf.duration || 5,
+            source: 'generated',
+        };
+        editorState.mediaItems.push(media);
+        renderMediaList();
+        placeAudioOnTrack(media, seg);
+        showToast('Audio extracted and placed on a track', 'success', '🎵');
+    } catch (err) {
+        const msg = err?.message || '';
+        if (msg === 'no_audio' || /decode/i.test(msg) || err?.name === 'EncodingError') {
+            showToast('No audio track found in this clip', 'error', '🔇');
+        } else if (/HTTP\s+\d+/i.test(msg)) {
+            showToast(`Audio extraction failed (${msg})`, 'error', '❌');
+        } else {
+            showToast('Audio extraction failed', 'error', '❌');
+        }
+        throw err;
+    }
 }
 
-function placeAudioOnTrack(media) {
-    const tracks = editorState.tracks.filter(t => t.type === 'audio');
-    if (!tracks.length) return;
-    let best = null;
-    tracks.forEach(t => {
-        const start = resolveNonOverlap(t, media.duration || 1, 0, null);
-        if (start == null) return;
-        if (!best || start < best.start) best = { track: t, start };
-    });
-    if (!best) {
-        // If no gap at 0, append to the end of the shortest audio track
-        let minEnd = Infinity;
-        let pick = tracks[0];
-        tracks.forEach(t => {
-            const end = t.segments.reduce((m, s) => Math.max(m, (s.start || 0) + (s.duration || 0)), 0);
-            if (end < minEnd) { minEnd = end; pick = t; }
+function placeAudioOnTrack(media, seg) {
+    const duration = media.duration || 1;
+    const originTrack = seg
+        ? editorState.tracks.find(t => t.segments.some(s => s.id === seg.id))
+        : null;
+    let targetTrack = null;
+    const desiredStart = seg?.start || 0;
+    const canPlaceAt = (track, start, dur) => {
+        return !track.segments.some(s => {
+            const sStart = s.start || 0;
+            const sEnd = sStart + (s.duration || 0);
+            const end = start + dur;
+            return start < sEnd - 1e-6 && end > sStart + 1e-6;
         });
-        best = { track: pick, start: minEnd };
+    };
+
+    if (originTrack) {
+        const originIdx = editorState.tracks.indexOf(originTrack);
+        const next = editorState.tracks[originIdx + 1];
+        if (next && next.type === 'audio' && canPlaceAt(next, desiredStart, duration)) {
+            targetTrack = next;
+        } else {
+            const count = editorState.tracks.filter(t => t.type === 'audio').length;
+            const newTrack = {
+                id: 'audio-' + Date.now(),
+                type: 'audio',
+                name: `Audio ${count + 1}`,
+                segments: [],
+            };
+            editorState.tracks.splice(originIdx + 1, 0, newTrack);
+            targetTrack = newTrack;
+        }
     }
-    const seg = {
+
+    const audioTracks = editorState.tracks.filter(t => t.type === 'audio');
+    if (!targetTrack) {
+        const openTrack = audioTracks.find(t => canPlaceAt(t, desiredStart, duration));
+        if (openTrack) targetTrack = openTrack;
+        else {
+            const count = editorState.tracks.filter(t => t.type === 'audio').length;
+            const newTrack = {
+                id: 'audio-' + Date.now(),
+                type: 'audio',
+                name: `Audio ${count + 1}`,
+                segments: [],
+            };
+            editorState.tracks.push(newTrack);
+            targetTrack = newTrack;
+        }
+    }
+
+    const start = desiredStart;
+
+    const audioSeg = {
         id: 'seg-' + Date.now(),
         mediaId: media.id,
         name: media.name,
         src: media.src,
-        start: best.start,
-        duration: media.duration || 1,
+        start,
+        duration,
         mediaType: 'audio',
         muted: false,
     };
-    best.track.segments.push(seg);
+    targetTrack.segments.push(audioSeg);
     renderTimeline();
 }
 
@@ -1201,7 +1320,8 @@ function createSegmentEl(seg, track) {
     const el = document.createElement('div');
     const fadeInCls = seg.fadeIn ? ' fade-in' : '';
     const fadeOutCls = seg.fadeOut ? ' fade-out' : '';
-    el.className = `tl-segment ${track.type}-seg${seg.muted && isAudio ? ' muted' : ''}${editorState.selectedSegId === seg.id ? ' selected' : ''}${fadeInCls}${fadeOutCls}`;
+    const needsLoad = !!seg.src && (seg.mediaType === 'video' || seg.mediaType === 'image');
+    el.className = `tl-segment ${track.type}-seg${seg.muted && isAudio ? ' muted' : ''}${editorState.selectedSegId === seg.id ? ' selected' : ''}${fadeInCls}${fadeOutCls}${needsLoad ? ' loading' : ''}`;
     el.dataset.segId = seg.id;
     el.style.left = (seg.start * editorState.pxPerSec) + 'px';
     el.style.width = (seg.duration * editorState.pxPerSec) + 'px';
@@ -1210,19 +1330,50 @@ function createSegmentEl(seg, track) {
         ? `<svg viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H2V15H6L11 19V5Z" fill="currentColor" opacity="0.5"/><path d="M23 9L17 15M17 9L23 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`
         : `<svg viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H2V15H6L11 19V5Z" fill="currentColor"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
 
-    const segThumb = seg.src && seg.mediaType === 'video'
-        ? `<div class="tl-seg-thumb"><video src="${seg.src}#t=0.1" preload="metadata" muted playsinline tabindex="-1"></video></div>`
-        : (seg.src && seg.mediaType === 'image'
-            ? `<div class="tl-seg-thumb"><img src="${seg.src}" alt="" /></div>`
-            : '');
+    let segThumb = '';
+    if (seg.src && seg.mediaType === 'video') {
+        const safeSrc = escH(seg.src);
+        segThumb = `<div class="tl-seg-thumb"><video src="${safeSrc}#t=0.1" preload="metadata" muted playsinline tabindex="-1"></video></div>`;
+    } else if (seg.src && seg.mediaType === 'image') {
+        const safeSrc = escH(seg.src);
+        segThumb = `<div class="tl-seg-thumb"><img src="${safeSrc}" alt="" /></div>`;
+    }
+    const loadingOverlay = needsLoad
+        ? `<div class="tl-seg-loading"><span class="spinner sm purple"></span><span>Loading</span></div>`
+        : '';
 
     el.innerHTML = `
     ${segThumb}
+    ${loadingOverlay}
     <span class="tl-seg-trim left"></span>
     <span class="tl-seg-label">${escH(seg.name)}</span>
     <span class="tl-seg-mute-btn ${seg.muted ? 'is-muted' : ''}" title="${seg.muted ? 'Unmute' : 'Mute'}">${muteIcon}</span>
     <span class="tl-seg-del" title="Remove">✕</span>
     <span class="tl-seg-trim right"></span>`;
+
+    if (needsLoad) {
+        const mediaEl = el.querySelector('video, img');
+        const markReady = () => el.classList.remove('loading');
+        if (mediaEl) {
+            if (mediaEl.tagName === 'VIDEO') {
+                const vid = mediaEl;
+                const onReady = () => markReady();
+                vid.addEventListener('loadeddata', onReady, { once: true });
+                vid.addEventListener('canplay', onReady, { once: true });
+                vid.addEventListener('loadedmetadata', onReady, { once: true });
+                vid.addEventListener('error', onReady, { once: true });
+                setTimeout(onReady, 4000);
+                if (vid.readyState >= 2) markReady();
+            } else {
+                if (mediaEl.complete) markReady();
+                mediaEl.addEventListener('load', markReady, { once: true });
+                mediaEl.addEventListener('error', markReady, { once: true });
+                setTimeout(markReady, 4000);
+            }
+        } else {
+            markReady();
+        }
+    }
 
     // ── Drag (cross-track ghost drag) ─────────────────────────
     el.addEventListener('pointerdown', e => {
