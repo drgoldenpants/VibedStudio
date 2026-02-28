@@ -27,8 +27,12 @@ jobs:
       - name: Install deps
         run: npm install
 
-      - name: Build release
-        run: npm run dist -- --publish=always
+      - name: Build release (retry)
+        run: |
+          npm run dist -- --publish=always || npm run dist -- --publish=always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          ELECTRON_GET_USE_PROXY: "true"
+          ELECTRON_GET_USE_PROXY_FOR_HTTPS: "true"
+          ELECTRON_MIRROR: "https://github.com/electron/electron/releases/download/"
