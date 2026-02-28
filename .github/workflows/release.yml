@@ -37,4 +37,3 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           ELECTRON_GET_USE_PROXY: "true"
           ELECTRON_GET_USE_PROXY_FOR_HTTPS: "true"
-          ELECTRON_MIRROR: "https://github.com/electron/electron/releases/download/"
