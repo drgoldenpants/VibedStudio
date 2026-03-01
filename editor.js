@@ -54,6 +54,7 @@ document.querySelectorAll('.app-tab').forEach(btn => {
             return;
         }
         const tab = btn.dataset.tab;
+        if (tab === 'editor') stopGenerationVideos();
         document.querySelectorAll('.app-tab').forEach(b => b.classList.remove('active'));
         document.querySelectorAll('.tab-page').forEach(p => p.classList.add('hidden'));
         btn.classList.add('active');
@@ -62,6 +63,17 @@ document.querySelectorAll('.app-tab').forEach(btn => {
         if (tab === 'images') window.initImages?.();
     });
 });
+
+function stopGenerationVideos() {
+    const page = document.getElementById('page-generate');
+    if (!page) return;
+    page.querySelectorAll('video').forEach(v => {
+        try {
+            v.pause();
+        } catch {
+        }
+    });
+}
 
 // ── Init ──────────────────────────────────────────────────────
 function initEditor() {

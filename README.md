@@ -34,8 +34,8 @@ http://localhost:8787
 Click the key icon in the header and paste your BytePlus API key. The key is stored in `localStorage` on your machine.
 
 ## Screenshots
+![Video generation view](screenshots/generation.png)
 ![Editor view](screenshots/editor.png)
-![Video generation view](screenshots/videos.png)
 
 ## Desktop App (One‑Click Installers)
 You can ship VibedStudio as a native app for macOS, Windows, and Linux.
