@@ -3,7 +3,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const { spawn } = require('child_process');
-const getPort = require('get-port');
+const net = require('net');
 const ffmpegPath = (() => {
   try { return require('ffmpeg-static'); } catch { return null; }
 })();
@@ -106,6 +106,27 @@ function serveStatic(req, res, rootDir, urlPath) {
   });
 }
 
+function checkPort(port) {
+  return new Promise(resolve => {
+    const tester = net.createServer()
+      .once('error', () => resolve(false))
+      .once('listening', () => {
+        tester.close(() => resolve(true));
+      })
+      .listen(port, '127.0.0.1');
+  });
+}
+
+async function findOpenPort(candidates) {
+  for (const port of candidates) {
+    if (port === 0) return 0;
+    // eslint-disable-next-line no-await-in-loop
+    const ok = await checkPort(port);
+    if (ok) return port;
+  }
+  return 0;
+}
+
 async function startServer() {
   const rootDir = path.join(__dirname, '..');
   const server = http.createServer((req, res) => {
@@ -167,7 +188,7 @@ async function startServer() {
     serveStatic(req, res, rootDir, parsed.pathname);
   });
 
-  const port = await getPort({ port: [8787, 8788, 8789, 0] });
+  const port = await findOpenPort([8787, 8788, 8789, 0]);
   await new Promise(resolve => server.listen(port, resolve));
   return port;
 }
