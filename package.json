@@ -1,9 +1,10 @@
 {
   "name": "vibedstudio",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Local-first AI video studio for BytePlus generation and editing.",
   "author": "VibedStudio",
   "private": true,
+  "type": "module",
   "main": "desktop/main.js",
   "scripts": {
     "dev": "electron .",

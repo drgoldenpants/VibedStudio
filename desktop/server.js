@@ -1,12 +1,27 @@
-const path = require('path');
-const fs = require('fs');
-const http = require('http');
-const https = require('https');
-const { spawn } = require('child_process');
-const net = require('net');
-const ffmpegPath = (() => {
-  try { return require('ffmpeg-static'); } catch { return null; }
-})();
+import path from 'path';
+import fs from 'fs';
+import http from 'http';
+import https from 'https';
+import { spawn } from 'child_process';
+import net from 'net';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+let ffmpegPathPromise = null;
+function getFfmpegPath() {
+  if (ffmpegPathPromise) return ffmpegPathPromise;
+  ffmpegPathPromise = (async () => {
+    try {
+      const mod = await import('ffmpeg-static');
+      return mod.default || mod;
+    } catch {
+      return null;
+    }
+  })();
+  return ffmpegPathPromise;
+}
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 
@@ -129,6 +144,7 @@ async function findOpenPort(candidates) {
 
 async function startServer() {
   const rootDir = path.join(__dirname, '..');
+  const ffmpegPath = await getFfmpegPath();
   const server = http.createServer((req, res) => {
     const method = req.method || 'GET';
     if (method !== 'GET' && method !== 'HEAD') {

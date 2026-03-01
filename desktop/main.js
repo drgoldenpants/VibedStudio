@@ -1,6 +1,5 @@
-const { app, BrowserWindow, shell } = require('electron');
-const path = require('path');
-const { startServer } = require('./server');
+import { app, BrowserWindow, shell } from 'electron';
+import { startServer } from './server.js';
 
 let mainWindow = null;
 
