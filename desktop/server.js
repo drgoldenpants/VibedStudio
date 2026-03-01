@@ -4,20 +4,71 @@ import http from 'http';
 import https from 'https';
 import { spawn } from 'child_process';
 import net from 'net';
+import os from 'os';
+import { pipeline } from 'stream/promises';
+import { createGunzip } from 'zlib';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const FFMPEG_RELEASE = 'b6.1.1';
+const FFMPEG_BINARIES_URL = process.env.FFMPEG_BINARIES_URL
+  || 'https://github.com/eugeneware/ffmpeg-static/releases/download';
 let ffmpegPathPromise = null;
-function getFfmpegPath() {
+
+function getFfmpegCacheDir() {
+  return path.join(os.homedir(), '.vibedstudio', 'ffmpeg');
+}
+
+function getFfmpegBinaryPath() {
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  return path.join(getFfmpegCacheDir(), `ffmpeg${ext}`);
+}
+
+function getFfmpegDownloadUrl() {
+  const platform = process.platform;
+  const arch = process.arch;
+  return `${FFMPEG_BINARIES_URL}/${FFMPEG_RELEASE}/ffmpeg-${platform}-${arch}.gz`;
+}
+
+async function downloadFfmpegBinary() {
+  const destPath = getFfmpegBinaryPath();
+  await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+  const tmpPath = `${destPath}.download`;
+  const url = getFfmpegDownloadUrl();
+
+  await new Promise((resolve, reject) => {
+    const req = https.get(url, res => {
+      if (!res || res.statusCode !== 200) {
+        res?.resume();
+        reject(new Error(`Failed to download ffmpeg (${res?.statusCode || 'no response'})`));
+        return;
+      }
+      pipeline(res, createGunzip(), fs.createWriteStream(tmpPath))
+        .then(resolve)
+        .catch(reject);
+    });
+    req.on('error', reject);
+  });
+
+  await fs.promises.rename(tmpPath, destPath);
+  if (process.platform !== 'win32') {
+    await fs.promises.chmod(destPath, 0o755);
+  }
+  return destPath;
+}
+
+async function ensureFfmpeg({ allowDownload }) {
   if (ffmpegPathPromise) return ffmpegPathPromise;
   ffmpegPathPromise = (async () => {
+    const binPath = getFfmpegBinaryPath();
     try {
-      const mod = await import('ffmpeg-static');
-      return mod.default || mod;
+      await fs.promises.access(binPath, fs.constants.X_OK);
+      return binPath;
     } catch {
-      return null;
+      if (!allowDownload) return null;
+      return await downloadFfmpegBinary();
     }
   })();
   return ffmpegPathPromise;
@@ -142,21 +193,83 @@ async function findOpenPort(candidates) {
   return 0;
 }
 
+async function handleExportRequest(req, res) {
+  const ffmpegPath = await ensureFfmpeg({ allowDownload: true });
+  if (!ffmpegPath) {
+    return sendJson(res, 501, {
+      error: 'ffmpeg_not_found',
+      message: 'ffmpeg is required on the server to export MP4.',
+    });
+  }
+
+  const tmpDir = path.join(getFfmpegCacheDir(), 'tmp');
+  await fs.promises.mkdir(tmpDir, { recursive: true });
+  const stamp = Date.now();
+  const inputPath = path.join(tmpDir, `export-${stamp}.webm`);
+  const outputPath = path.join(tmpDir, `export-${stamp}.mp4`);
+
+  const writeStream = fs.createWriteStream(inputPath);
+  req.pipe(writeStream);
+  await new Promise((resolve, reject) => {
+    writeStream.on('finish', resolve);
+    writeStream.on('error', reject);
+    req.on('error', reject);
+  });
+
+  await new Promise((resolve, reject) => {
+    const args = [
+      '-y',
+      '-i', inputPath,
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-pix_fmt', 'yuv420p',
+      '-movflags', 'faststart',
+      outputPath,
+    ];
+    const ff = spawn(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    ff.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    ff.on('close', code => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr || 'ffmpeg failed'));
+    });
+    ff.on('error', reject);
+  });
+
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'video/mp4');
+  const stream = fs.createReadStream(outputPath);
+  stream.on('close', async () => {
+    await fs.promises.unlink(inputPath).catch(() => {});
+    await fs.promises.unlink(outputPath).catch(() => {});
+  });
+  stream.pipe(res);
+}
+
 async function startServer() {
   const rootDir = path.join(__dirname, '..');
-  let ffmpegPath = await getFfmpegPath();
-  if (ffmpegPath && ffmpegPath.includes('app.asar')) {
-    ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
-  }
   const server = http.createServer((req, res) => {
     const method = req.method || 'GET';
+    const parsed = new URL(req.url || '/', 'http://localhost');
+
+    if (parsed.pathname === '/api/export') {
+      if (method !== 'POST') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      handleExportRequest(req, res).catch(err => {
+        sendJson(res, 502, { error: 'ffmpeg_failed', message: err.message });
+      });
+      return;
+    }
+
     if (method !== 'GET' && method !== 'HEAD') {
       res.statusCode = 405;
       res.end('Method Not Allowed');
       return;
     }
 
-    const parsed = new URL(req.url || '/', 'http://localhost');
     if (parsed.pathname === '/api/video') {
       const url = parsed.searchParams.get('url');
       if (!url) return sendJson(res, 400, { error: 'missing_url' });
@@ -165,41 +278,47 @@ async function startServer() {
     }
 
     if (parsed.pathname === '/api/thumb') {
-      if (!ffmpegPath) {
-        return sendJson(res, 501, {
-          error: 'ffmpeg_not_found',
-          message: 'ffmpeg is required on the server to generate thumbnails.',
-        });
-      }
-      const url = parsed.searchParams.get('url');
-      const t = parsed.searchParams.get('t');
-      if (!url) return sendJson(res, 400, { error: 'missing_url' });
-
-      const seek = Number.isFinite(Number(t)) ? Math.max(0.05, Number(t)) : 0.1;
-      const args = [
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-user_agent', USER_AGENT,
-        '-ss', String(seek),
-        '-i', url,
-        '-frames:v', '1',
-        '-f', 'image2',
-        '-vcodec', 'png',
-        'pipe:1',
-      ];
-      const ff = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-      const chunks = [];
-      let stderr = '';
-      ff.stdout.on('data', chunk => chunks.push(chunk));
-      ff.stderr.on('data', chunk => { stderr += chunk.toString(); });
-      ff.on('close', code => {
-        if (code === 0 && chunks.length) {
-          const buf = Buffer.concat(chunks);
-          res.setHeader('Content-Type', 'image/png');
-          res.end(buf);
-        } else {
-          sendJson(res, 502, { error: 'thumb_failed', message: stderr || 'ffmpeg failed' });
+      ensureFfmpeg({ allowDownload: false }).then(ffmpegPath => {
+        if (!ffmpegPath) {
+          sendJson(res, 501, {
+            error: 'ffmpeg_not_found',
+            message: 'ffmpeg is required on the server to generate thumbnails.',
+          });
+          return;
         }
+
+        const url = parsed.searchParams.get('url');
+        const t = parsed.searchParams.get('t');
+        if (!url) return sendJson(res, 400, { error: 'missing_url' });
+
+        const seek = Number.isFinite(Number(t)) ? Math.max(0.05, Number(t)) : 0.1;
+        const args = [
+          '-hide_banner',
+          '-loglevel', 'error',
+          '-user_agent', USER_AGENT,
+          '-ss', String(seek),
+          '-i', url,
+          '-frames:v', '1',
+          '-f', 'image2',
+          '-vcodec', 'png',
+          'pipe:1',
+        ];
+        const ff = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        const chunks = [];
+        let stderr = '';
+        ff.stdout.on('data', chunk => chunks.push(chunk));
+        ff.stderr.on('data', chunk => { stderr += chunk.toString(); });
+        ff.on('close', code => {
+          if (code === 0 && chunks.length) {
+            const buf = Buffer.concat(chunks);
+            res.setHeader('Content-Type', 'image/png');
+            res.end(buf);
+          } else {
+            sendJson(res, 502, { error: 'thumb_failed', message: stderr || 'ffmpeg failed' });
+          }
+        });
+      }).catch(err => {
+        sendJson(res, 502, { error: 'thumb_failed', message: err.message });
       });
       return;
     }

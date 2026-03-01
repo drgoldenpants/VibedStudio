@@ -116,6 +116,14 @@ let listSyncTimer = null;
 let listSyncInFlight = false;
 const activePolls = new Map();
 
+function getProxiedVideoUrl(videoUrl) {
+  if (!videoUrl) return videoUrl;
+  if (location.protocol !== 'file:' && location.origin !== 'null') {
+    return `/api/video?url=${encodeURIComponent(videoUrl)}`;
+  }
+  return videoUrl;
+}
+
 function setRatioValue(value, { silent = false } = {}) {
   if (!value) return;
   state.ratio = value;
@@ -2490,12 +2498,12 @@ function updateJobCard(taskId, status, videoUrl) {
       img.src = thumbUrl;
       img.alt = 'Thumbnail';
       thumbEl.appendChild(img);
-    } else if (!job.thumbDisabled) {
+    } else {
       const ph = document.createElement('div');
       ph.className = 'thumb-placeholder';
-      ph.textContent = 'Loading thumbnail…';
+      ph.textContent = job.thumbDisabled ? 'Thumbnail unavailable' : 'Loading thumbnail…';
       thumbEl.appendChild(ph);
-      if (resolvedUrl) ensureThumbnail(job, taskId, resolvedUrl);
+      if (!job.thumbDisabled && resolvedUrl) ensureThumbnail(job, taskId, resolvedUrl);
     }
     const play = document.createElement('button');
     play.className = 'thumb-play-btn';
@@ -2658,7 +2666,7 @@ function loadVideoIntoCard(taskId, videoUrl) {
   });
   thumbEl.innerHTML = '';
   const video = document.createElement('video');
-  video.src = videoUrl;
+  video.src = getProxiedVideoUrl(videoUrl);
   video.controls = true;
   video.loop = true;
   video.playsInline = true;
@@ -2668,6 +2676,9 @@ function loadVideoIntoCard(taskId, videoUrl) {
     document.querySelectorAll('.video-card-thumb video').forEach(v => {
       if (v !== video && !v.paused) v.pause();
     });
+  });
+  video.addEventListener('error', () => {
+    showToast('Video failed to load. Try refresh or regenerate.', 'error', '⚠️');
   });
   video.play().catch(() => { });
 }
@@ -2774,7 +2785,14 @@ async function ensureThumbnail(job, taskId, videoUrl) {
   job._thumbLoading = true;
   try {
     const thumb = await fetchVideoThumbnail(videoUrl);
-    if (!thumb) return;
+    if (!thumb) {
+      job.thumbDisabled = true;
+      await saveVideoJob(job, job.videoBlob || null);
+      const holder = $(`thumb-${taskId}`);
+      const placeholder = holder?.querySelector('.thumb-placeholder');
+      if (placeholder) placeholder.textContent = 'Thumbnail unavailable';
+      return;
+    }
     job.thumbDataUrl = thumb;
     await saveVideoJob(job, job.videoBlob || null);
     const thumbEl = $(`thumb-${taskId}`);
@@ -2799,14 +2817,7 @@ async function ensureThumbnail(job, taskId, videoUrl) {
     }
     window.syncMediaLibrary?.();
   } catch (e) {
-    if (e?.message === 'ffmpeg_not_found') {
-      job.thumbDisabled = true;
-      await saveVideoJob(job, job.videoBlob || null);
-      const holder = $(`thumb-${taskId}`);
-      holder?.querySelector('.thumb-placeholder')?.remove();
-    } else {
-      console.warn('Thumbnail failed:', e);
-    }
+    console.warn('Thumbnail failed:', e);
   } finally {
     job._thumbLoading = false;
   }
@@ -2821,12 +2832,8 @@ async function fetchVideoThumbnail(videoUrl) {
         const blob = await res.blob();
         return await blobToDataUrl(blob);
       }
-      const err = await res.json().catch(() => ({}));
-      if (err?.error === 'ffmpeg_not_found') {
-        throw new Error('ffmpeg_not_found');
-      }
+      await res.json().catch(() => ({}));
     } catch (e) {
-      if (e?.message === 'ffmpeg_not_found') throw e;
     }
   }
   // Fallback: client-side capture (may still be lightweight)
@@ -2836,9 +2843,7 @@ async function fetchVideoThumbnail(videoUrl) {
 function captureThumbnailClient(videoUrl) {
   return new Promise((resolve, reject) => {
     const v = document.createElement('video');
-    const src = (location.protocol !== 'file:' && location.origin !== 'null')
-      ? `/api/video?url=${encodeURIComponent(videoUrl)}`
-      : videoUrl;
+    const src = getProxiedVideoUrl(videoUrl);
     v.src = src;
     v.preload = 'metadata';
     v.muted = true;
