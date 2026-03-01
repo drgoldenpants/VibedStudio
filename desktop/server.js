@@ -212,11 +212,11 @@ async function startServer() {
   return port;
 }
 
-if (require.main === module) {
+if (process.argv[1] && process.argv[1] === __filename) {
   startServer().then(port => {
     // eslint-disable-next-line no-console
     console.log(`VibedStudio server running at http://localhost:${port}`);
   });
 }
 
-module.exports = { startServer };
+export { startServer };
