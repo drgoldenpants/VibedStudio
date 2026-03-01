@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Local Vibed Studio</title>
+    <title>Vibed Studio</title>
     <link rel="icon" type="image/svg+xml"
         href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 120'%3E%3Cpolygon points='12,14 46,4 46,106 12,116' fill='%232f5aa8'/%3E%3Cpolygon points='58,38 86,28 86,94 58,104' fill='%234a8cff'/%3E%3Cpolygon points='102,30 126,22 126,90 102,98' fill='%2318b6c2'/%3E%3Cpolygon points='134,12 158,4 158,106 134,116' fill='%237fe9db'/%3E%3C/svg%3E" />
     <meta name="description" content="Generate and edit AI videos using BytePlus VibedStudio." />
@@ -35,7 +35,7 @@
                         <polygon points="134,12 158,4 158,106 134,116" fill="#7fe9db" />
                     </svg>
                 </div>
-                <span class="logo-text">LOCAL VIBED <span class="logo-sub">Studio</span></span>
+                <span class="logo-text">VIBED <span class="logo-sub">Studio</span></span>
             </div>
             <nav class="app-tabs">
                 <button class="app-tab" data-tab="images">
@@ -72,6 +72,9 @@
 
                 <!-- Compact API key widget -->
                 <div class="hak-widget" id="hak-widget">
+                    <div class="hak-tooltip" id="hak-tooltip">
+                        Add your BytePlus API key to start &emsp;
+                    </div>
                     <button class="hak-trigger" id="hak-trigger" title="Set API Key">
                         <svg viewBox="0 0 24 24" fill="none">
                             <path
@@ -81,6 +84,7 @@
                         </svg>
                         <span class="hak-dot" id="hak-dot"></span>
                     </button>
+                  
                     <div class="hak-panel" id="hak-panel">
                         <div class="hak-inner">
                             <label class="hak-label" for="api-key">BytePlus API Key</label>
@@ -456,10 +460,22 @@
                         <div class="video-output-header">
                             <span class="video-output-title">Generated Videos</span>
                             <div class="video-output-actions">
-                                <button class="video-output-btn" id="export-history-btn">Export History</button>
-                                <button class="video-output-btn ghost" id="import-history-btn">Import History</button>
-                                <input type="file" id="import-history-input" accept="application/json" hidden />
+                                <button class="video-output-btn ghost" id="refresh-generations-btn">Refresh</button>
+                                <button class="video-output-btn ghost" id="video-prev-page" hidden>Prev</button>
+                                <button class="video-output-btn ghost" id="video-next-page">Next</button>
+                                <button class="video-output-btn ghost" id="export-videos-btn">Export Videos</button>
                             </div>
+                        </div>
+                        <div class="export-progress-backdrop hidden" id="export-progress-backdrop"></div>
+                        <div class="export-progress hidden" id="export-progress">
+                            <div class="export-progress-info">
+                                <span id="export-progress-text">Exporting…</span>
+                                <span id="export-progress-count">0/0</span>
+                            </div>
+                            <div class="export-progress-bar">
+                                <div class="export-progress-fill" id="export-progress-fill"></div>
+                            </div>
+                            <div class="export-progress-file" id="export-progress-file"></div>
                         </div>
                         <div class="empty-state" id="empty-state">
                             <div class="empty-icon">

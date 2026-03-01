@@ -192,7 +192,8 @@ function initTimelineScrollSync() {
 
 // ── Media Library ─────────────────────────────────────────────
 function syncMediaLibrary() {
-    const generated = (window.state?.jobs || []).filter(j => j.status === 'succeeded' && j.videoUrl);
+    const generated = (window.state?.jobs || [])
+        .filter(j => j.status === 'succeeded' && j.videoUrl);
     generated.forEach(job => {
         const existing = editorState.mediaItems.find(m => m.id === job.id);
         if (existing) {
@@ -241,7 +242,7 @@ function renderMediaList() {
     eq('media-gen-count').textContent = generated.length;
     eq('media-up-count').textContent = uploads.length;
 
-    const visibleGenerated = generated.filter(m => !m.thumbDisabled);
+    const visibleGenerated = generated;
     const totalGenerated = visibleGenerated.length;
     const perPage = Math.max(4, editorState.generatedPerPage || 12);
     const totalPages = Math.max(1, Math.ceil(totalGenerated / perPage));
@@ -283,7 +284,7 @@ function renderMediaList() {
                 if (fresh) {
                     const proxy = maybeProxySrc(fresh);
                     v.dataset.proxy = proxy || '';
-                    v.src = `${fresh}#t=0.1`;
+                    v.src = `${proxy || fresh}#t=0.1`;
                     try { v.load(); } catch { }
                     return;
                 }
@@ -292,6 +293,10 @@ function renderMediaList() {
             if (proxy && v.src !== proxy) {
                 v.src = proxy;
                 try { v.load(); } catch { }
+                return;
+            }
+            if (mediaId) {
+                await removeMediaIfForbidden(mediaId, v.currentSrc || v.src);
             }
         });
     });
@@ -306,6 +311,32 @@ function renderMediaList() {
     });
 }
 
+const mediaForbiddenChecks = new Map();
+
+async function removeMediaIfForbidden(mediaId, src) {
+    if (!mediaId || !src) return;
+    if (mediaForbiddenChecks.has(mediaId)) return;
+    mediaForbiddenChecks.set(mediaId, true);
+    try {
+        const isProxy = src.includes('/api/video?url=');
+        if (!isProxy) return;
+        const res = await fetch(src, {
+            method: 'GET',
+            cache: 'no-store',
+            headers: { Range: 'bytes=0-0' },
+        });
+        if (res.status !== 403) return;
+        editorState.mediaItems = editorState.mediaItems.filter(m => m.id !== mediaId);
+        editorState.tracks.forEach(t => {
+            t.segments = t.segments.filter(s => s.mediaId !== mediaId);
+        });
+        renderMediaList();
+        renderTimeline();
+        showToast('Removed a video that returned 403', 'info', '🧹');
+    } catch {
+    }
+}
+
 function mediaItemHTML(m, { compact = false } = {}) {
     const videoIcon = `<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="1.5"/><polygon points="10,8 10,16 17,12" fill="currentColor" opacity="0.8"/></svg>`;
     const audioIcon = `<svg viewBox="0 0 24 24" fill="none"><path d="M9 18V5L21 3V16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="1.5"/></svg>`;
@@ -316,14 +347,18 @@ function mediaItemHTML(m, { compact = false } = {}) {
             if (compact && m.thumbDataUrl) {
                 const safeThumb = escH(m.thumbDataUrl);
                 thumbInner = `<img src="${safeThumb}" alt="${escH(m.name)}" />`;
-            } else {
+            } else if (!compact) {
                 const proxy = m.proxySrc || maybeProxySrc(m.src) || '';
-                const proxyAttr = proxy ? ` data-proxy="${escH(proxy)}"` : '';
-                const safeSrc = escH(m.src);
-                thumbInner = `<video src="${safeSrc}#t=0.1" preload="metadata" muted playsinline${proxyAttr}></video>`;
+                const isRemote = /^https?:/i.test(m.src);
+                if (!proxy && isRemote) {
+                    thumbInner = `<div class="media-thumb-icon">${videoIcon}</div>`;
+                } else {
+                    const proxyAttr = proxy ? ` data-proxy="${escH(proxy)}"` : '';
+                    const safeSrc = escH(proxy || m.src);
+                    thumbInner = `<video src="${safeSrc}#t=0.1" preload="metadata" muted playsinline${proxyAttr}></video>`;
+                }
             }
-        }
-        else if (m.type === 'image') {
+        } else if (m.type === 'image') {
             const safeSrc = escH(m.src);
             thumbInner = `<img src="${safeSrc}" alt="${escH(m.name)}" />`;
         }
@@ -1320,7 +1355,11 @@ function createSegmentEl(seg, track) {
     const el = document.createElement('div');
     const fadeInCls = seg.fadeIn ? ' fade-in' : '';
     const fadeOutCls = seg.fadeOut ? ' fade-out' : '';
-    const needsLoad = !!seg.src && (seg.mediaType === 'video' || seg.mediaType === 'image');
+    if (seg.mediaType === 'video' && !seg.thumbDataUrl && seg.mediaId) {
+        const media = editorState.mediaItems.find(m => m.id === seg.mediaId);
+        if (media?.thumbDataUrl) seg.thumbDataUrl = media.thumbDataUrl;
+    }
+    const needsLoad = !!seg.src && seg.mediaType === 'image';
     el.className = `tl-segment ${track.type}-seg${seg.muted && isAudio ? ' muted' : ''}${editorState.selectedSegId === seg.id ? ' selected' : ''}${fadeInCls}${fadeOutCls}${needsLoad ? ' loading' : ''}`;
     el.dataset.segId = seg.id;
     el.style.left = (seg.start * editorState.pxPerSec) + 'px';
@@ -1331,9 +1370,13 @@ function createSegmentEl(seg, track) {
         : `<svg viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H2V15H6L11 19V5Z" fill="currentColor"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
 
     let segThumb = '';
-    if (seg.src && seg.mediaType === 'video') {
-        const safeSrc = escH(seg.src);
-        segThumb = `<div class="tl-seg-thumb"><video src="${safeSrc}#t=0.1" preload="metadata" muted playsinline tabindex="-1"></video></div>`;
+    if (seg.mediaType === 'video') {
+        if (seg.thumbDataUrl) {
+            const safeThumb = escH(seg.thumbDataUrl);
+            segThumb = `<div class="tl-seg-thumb"><img src="${safeThumb}" alt="" /></div>`;
+        } else {
+            segThumb = `<div class="tl-seg-thumb tl-seg-thumb-placeholder"></div>`;
+        }
     } else if (seg.src && seg.mediaType === 'image') {
         const safeSrc = escH(seg.src);
         segThumb = `<div class="tl-seg-thumb"><img src="${safeSrc}" alt="" /></div>`;
@@ -1587,11 +1630,16 @@ function dropMediaOnTrack(trackId, mediaId, startTime) {
 
     const seg = {
         id: 'seg-' + Date.now(), mediaId, name: media.name, src: media.src,
-        start: finalStart, duration: media.duration || 5, mediaType: media.type, muted: false
+        start: finalStart, duration: media.duration || 5, mediaType: media.type, muted: false,
+        thumbDataUrl: media.thumbDataUrl || null,
     };
     track.segments.push(seg);
     renderTimeline();
     showToast(`Added "${media.name}" to ${track.name}`, 'info', '✂️');
+
+    if (media.type === 'video' && window.ensureVideoCached) {
+        window.ensureVideoCached(mediaId, { silent: true });
+    }
 }
 
 function removeSegment(trackId, segId) {
@@ -1710,11 +1758,28 @@ function updatePreviewForTime(t) {
             editorState.previewType = 'image';
             editorState.previewOpacity = Number(opacity);
         } else {
-            const src = editorState.exporting ? getExportSrc(found.src) : found.src;
+            const media = found.mediaId ? editorState.mediaItems.find(m => m.id === found.mediaId) : null;
+            const rawSrc = media?.src || found.src;
+            const src = editorState.exporting ? getExportSrc(rawSrc) : maybeProxySrc(rawSrc);
             img.classList.remove('active');
             img.style.opacity = '1';
             vid.classList.add('active');
-            if (vid.dataset.src !== src) { vid.dataset.src = src; vid.src = src; }
+            if (vid.dataset.src !== src) {
+                vid.dataset.src = src;
+                vid.src = src;
+                vid.onerror = async () => {
+                    if (found.mediaId && window.refreshJobVideoUrl) {
+                        const fresh = await window.refreshJobVideoUrl(found.mediaId, { silent: true });
+                        if (fresh) {
+                            const proxied = editorState.exporting ? getExportSrc(fresh) : maybeProxySrc(fresh);
+                            vid.dataset.src = proxied;
+                            vid.src = proxied;
+                            try { vid.load(); } catch { }
+                            return;
+                        }
+                    }
+                };
+            }
             vid.muted = !!found.muted;
             vid.style.opacity = opacity;
             const segTime = t - found.start;

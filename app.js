@@ -2,7 +2,11 @@
    VibedStudio AI Video Studio — app.js
    ============================================================ */
 
-const API_BASE = 'https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks';
+const ARK_BASE = 'https://ark.ap-southeast.bytepluses.com/api/v3';
+const IS_HTTP_ORIGIN = location.protocol.startsWith('http');
+const API_BASE = IS_HTTP_ORIGIN
+  ? '/api/ark/contents/generations/tasks'
+  : `${ARK_BASE}/contents/generations/tasks`;
 
 // ── State ─────────────────────────────────────────────────────
 const state = {
@@ -90,11 +94,19 @@ const emptyState = $('empty-state');
 const videoGrid = $('video-grid');
 const toastContainer = $('toast-container');
 const serverHelpBtn = $('server-help-btn');
-const exportHistoryBtn = $('export-history-btn');
-const importHistoryBtn = $('import-history-btn');
-const importHistoryInput = $('import-history-input');
+const exportVideosBtn = $('export-videos-btn');
+const exportProgress = $('export-progress');
+const exportProgressBackdrop = $('export-progress-backdrop');
+const exportProgressText = $('export-progress-text');
+const exportProgressCount = $('export-progress-count');
+const exportProgressFill = $('export-progress-fill');
+const exportProgressFile = $('export-progress-file');
 const toggleControlsBtn = $('toggle-controls');
 const controlsTab = $('controls-tab');
+const refreshGenerationsBtn = $('refresh-generations-btn');
+const videoPrevPageBtn = $('video-prev-page');
+const videoNextPageBtn = $('video-next-page');
+const hakTooltip = $('hak-tooltip');
 const pillModel = $('pill-model');
 const pillRatio = $('pill-ratio');
 const pillDuration = $('pill-duration');
@@ -116,13 +128,50 @@ let listSyncTimer = null;
 let listSyncInFlight = false;
 const activePolls = new Map();
 
+const VIDEO_PAGE_SIZE = 9;
+let videoPage = 1;
+const videoCacheInflight = new Set();
+let serverThumbsDisabled = false;
+
 function getProxiedVideoUrl(videoUrl) {
   if (!videoUrl) return videoUrl;
+  if (videoUrl.startsWith('blob:')) return videoUrl;
   if (location.protocol !== 'file:' && location.origin !== 'null') {
     return `/api/video?url=${encodeURIComponent(videoUrl)}`;
   }
   return videoUrl;
 }
+
+async function ensureVideoCached(jobId, { silent = false } = {}) {
+  if (!jobId) return null;
+  const job = state.jobs.find(j => j.id === jobId);
+  if (!job || !job.videoUrl) return null;
+  if (job.videoBlob || job._cachedUrl) return job.videoUrl;
+  if (videoCacheInflight.has(jobId)) return job.videoUrl;
+  if (!(await ensureDBReady())) return job.videoUrl;
+
+  videoCacheInflight.add(jobId);
+  try {
+    const res = await fetch(getProxiedVideoUrl(job.videoUrl));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    job.videoBlob = blob;
+    const objectUrl = URL.createObjectURL(blob);
+    job.videoUrl = objectUrl;
+    job._cachedUrl = objectUrl;
+    await saveVideoJob(job, blob);
+    window.syncMediaLibrary?.();
+    updateCacheTagForCard(jobId, job);
+    if (!silent) showToast('Video cached for faster editing', 'success', '⚡');
+    return objectUrl;
+  } catch (e) {
+    console.warn('Video cache failed:', e);
+    return job.videoUrl;
+  } finally {
+    videoCacheInflight.delete(jobId);
+  }
+}
+window.ensureVideoCached = ensureVideoCached;
 
 function setRatioValue(value, { silent = false } = {}) {
   if (!value) return;
@@ -182,7 +231,9 @@ const CURRENCY_SYMBOLS = {
 };
 const RATE_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
 const RATE_ENDPOINT = `https://api.frankfurter.dev/v1/latest?base=USD&symbols=${CURRENCY_LIST.filter(c => c !== 'USD').join(',')}`;
-const TOKENIZE_ENDPOINT = 'https://ark.ap-southeast.bytepluses.com/api/v3/tokenization';
+const TOKENIZE_ENDPOINT = IS_HTTP_ORIGIN
+  ? '/api/ark/tokenization'
+  : `${ARK_BASE}/tokenization`;
 
 function getModelPricing(model, { generateAudio = true, serviceTier = 'default' } = {}) {
   const resolved = resolveModelId(model, state.mode);
@@ -595,14 +646,12 @@ async function loadVideosFromDB() {
       }
       item.thumbDisabled = !!item.thumbDisabled;
       state.jobs.push(item);
-      renderJobCard(item);
-      if (item.status === 'succeeded') updateJobCard(item.id, 'succeeded', item.videoUrl);
-      else if (item.status === 'failed') updateJobCard(item.id, 'failed');
-      else if (item.status === 'running') {
+      if (item.status === 'running') {
         const elapsed = Math.floor((Date.now() - item.timestamp.getTime()) / 1000);
         pollJob(item.id, { initialElapsed: Math.max(0, elapsed) });
       }
     });
+    renderVideoPage();
     updateEmptyState();
     window.syncMediaLibrary?.();
     showToast(`Loaded ${records.length} video${records.length > 1 ? 's' : ''} from history`, 'info', '📂');
@@ -630,65 +679,114 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([arr], { type: mime });
 }
 
-async function exportVideoHistory() {
+function startExportProgress(total) {
+  if (!exportProgress) return;
+  exportProgress.classList.remove('hidden');
+  exportProgressBackdrop?.classList.remove('hidden');
+  if (exportProgressText) exportProgressText.textContent = 'Exporting videos…';
+  if (exportProgressCount) exportProgressCount.textContent = `0/${total}`;
+  if (exportProgressFill) exportProgressFill.style.width = '0%';
+  if (exportProgressFile) exportProgressFile.textContent = '';
+}
+
+function updateExportProgress(current, total, label = '') {
+  if (!exportProgress) return;
+  const pct = total ? Math.round((current / total) * 100) : 0;
+  if (exportProgressCount) exportProgressCount.textContent = `${current}/${total}`;
+  if (exportProgressFill) exportProgressFill.style.width = `${pct}%`;
+  if (exportProgressFile) exportProgressFile.textContent = label;
+}
+
+function finishExportProgress() {
+  if (!exportProgress) return;
+  exportProgress.classList.add('hidden');
+  exportProgressBackdrop?.classList.add('hidden');
+}
+
+async function exportAllVideos() {
   if (!(await ensureDBReady())) return;
   const records = await dbGetAll('videos');
   if (!records.length) {
-    showToast('No video history to export', 'info', '📦');
+    showToast('No videos to export', 'info', '📦');
     return;
   }
 
-  const maxBlobSize = 8 * 1024 * 1024; // 8MB
-    const videos = await Promise.all(records.map(async r => {
-      const item = {
-        id: r.id,
-        status: r.status,
-        videoUrl: r.videoUrl || null,
-        thumbDataUrl: r.thumbDataUrl || null,
-        prompt: r.prompt || '',
-        model: r.model || '',
-        ratio: r.ratio || '',
-        duration: r.duration || 0,
-        resolution: r.resolution || null,
-        returnLastFrame: !!r.returnLastFrame,
-        serviceTier: r.serviceTier || 'default',
-        draft: !!r.draft,
-        mode: r.mode || 'text',
-        draftTaskId: r.draftTaskId || null,
-        promptText: r.promptText || '',
-        imageDataUrl: r.imageDataUrl || null,
-        firstFrameDataUrl: r.firstFrameDataUrl || null,
-        lastFrameDataUrl: r.lastFrameDataUrl || null,
-        generateAudio: !!r.generateAudio,
-        watermark: !!r.watermark,
-        timestamp: r.timestamp,
-    };
-    if (r.videoBlob && r.videoBlob.size <= maxBlobSize) {
-      try {
-        item.videoBlobBase64 = await blobToDataUrl(r.videoBlob);
-      } catch { item.videoBlobSkipped = true; }
-    } else if (r.videoBlob) {
-      item.videoBlobSkipped = true;
-      item.videoBlobSize = r.videoBlob.size;
-    }
-    return item;
-  }));
-
-  const payload = {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    videos,
+  const getExt = (blob, contentType) => {
+    const type = (contentType || blob?.type || '').toLowerCase();
+    if (type.includes('webm')) return 'webm';
+    if (type.includes('mp4')) return 'mp4';
+    if (type.includes('quicktime') || type.includes('mov')) return 'mov';
+    return 'mp4';
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `vibedstudio-history-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  showToast('History exported', 'success', '📦');
+
+  const fetchBlobForRecord = async record => {
+    if (record.videoBlob instanceof Blob) return { blob: record.videoBlob, type: record.videoBlob.type };
+    let url = record.videoUrl || null;
+    const job = state.jobs.find(j => j.id === record.id);
+    if (!url && job?.videoUrl) url = job.videoUrl;
+    if (!url) return { blob: null, type: '' };
+
+    const fetchUrl = async target => {
+      const res = await fetch(getProxiedVideoUrl(target), { cache: 'no-store' });
+      if (!res.ok) return { ok: false, status: res.status, type: res.headers.get('content-type') || '' };
+      const blob = await res.blob();
+      return { ok: true, blob, type: res.headers.get('content-type') || '' };
+    };
+
+    let attempt = await fetchUrl(url);
+    if (!attempt.ok && attempt.status === 403 && state.apiKey && window.refreshJobVideoUrl) {
+      const fresh = await refreshJobVideoUrl(record.id, { silent: true });
+      if (fresh) {
+        attempt = await fetchUrl(fresh);
+        if (attempt.ok) url = fresh;
+      }
+    }
+    if (!attempt.ok) return { blob: null, type: attempt.type || '' };
+    return { blob: attempt.blob, type: attempt.type || '' };
+  };
+
+  if (typeof window.showDirectoryPicker === 'function') {
+    startExportProgress(records.length);
+    const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    let exported = 0;
+    for (let i = 0; i < records.length; i += 1) {
+      const r = records[i];
+      const { blob, type } = await fetchBlobForRecord(r);
+      updateExportProgress(i + 1, records.length, r.prompt || r.id);
+      if (!blob) continue;
+      const ext = getExt(blob, type);
+      const name = `vibedstudio-${String(r.id).slice(-10)}.${ext}`;
+      const fileHandle = await dirHandle.getFileHandle(name, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      exported += 1;
+    }
+    finishExportProgress();
+    showToast(`Exported ${exported} video${exported !== 1 ? 's' : ''}`, 'success', '📁');
+    return;
+  }
+
+  let exported = 0;
+  startExportProgress(records.length);
+  for (let i = 0; i < records.length; i += 1) {
+    const r = records[i];
+    const { blob, type } = await fetchBlobForRecord(r);
+    updateExportProgress(i + 1, records.length, r.prompt || r.id);
+    if (!blob) continue;
+    const ext = getExt(blob, type);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `vibedstudio-${String(r.id).slice(-10)}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    exported += 1;
+  }
+  finishExportProgress();
+  showToast(`Exported ${exported} video${exported !== 1 ? 's' : ''}`, 'success', '📁');
 }
 
 async function importVideoHistory(file) {
@@ -746,11 +844,9 @@ async function importVideoHistory(file) {
     record.timestamp = new Date(record.timestamp);
     if (record.videoBlob) record.videoUrl = URL.createObjectURL(record.videoBlob);
     state.jobs.push(record);
-    renderJobCard(record);
-    if (record.status === 'succeeded' && record.videoUrl) updateJobCard(record.id, 'succeeded', record.videoUrl);
-    else if (record.status === 'failed') updateJobCard(record.id, 'failed');
     added++;
   }
+  renderVideoPage();
   updateEmptyState();
   window.syncMediaLibrary?.();
   showToast(`Imported ${added} video${added !== 1 ? 's' : ''}${skipped ? ` (${skipped} skipped)` : ''}`, 'success', '📥');
@@ -764,7 +860,10 @@ function deleteJob(id) {
     card.style.transition = 'opacity 0.25s, transform 0.25s';
     card.style.opacity = '0';
     card.style.transform = 'scale(0.95)';
-    setTimeout(() => { card.remove(); updateEmptyState(); }, 260);
+    setTimeout(() => { card.remove(); renderVideoPage(); updateEmptyState(); }, 260);
+  } else {
+    renderVideoPage();
+    updateEmptyState();
   }
 }
 window.deleteJob = deleteJob;
@@ -810,7 +909,8 @@ function autoDownload(url, taskId) {
 }
 
 async function init() {
-  if (state.apiKey) { apiKeyInput.value = state.apiKey; updateHakDot(); }
+  if (state.apiKey) { apiKeyInput.value = state.apiKey; }
+  updateHakDot();
   if (resolutionGrid) {
     const selected = resolutionGrid.querySelector('.resolution-btn.selected');
     if (selected) state.resolution = selected.dataset.resolution;
@@ -854,21 +954,41 @@ async function init() {
   updatePromptChips();
 }
 
-if (exportHistoryBtn) {
-  exportHistoryBtn.addEventListener('click', () => {
-    exportVideoHistory().catch(e => {
-      console.warn('Export history failed:', e);
+if (exportVideosBtn) {
+  exportVideosBtn.addEventListener('click', () => {
+    exportAllVideos().catch(e => {
+      console.warn('Export videos failed:', e);
       showToast('Export failed', 'error', '❌');
     });
   });
 }
 
-if (importHistoryBtn && importHistoryInput) {
-  importHistoryBtn.addEventListener('click', () => importHistoryInput.click());
-  importHistoryInput.addEventListener('change', async () => {
-    const file = importHistoryInput.files?.[0];
-    if (file) await importVideoHistory(file);
-    importHistoryInput.value = '';
+if (refreshGenerationsBtn) {
+  refreshGenerationsBtn.addEventListener('click', () => {
+    refreshGenerations().catch(err => {
+      console.warn('Refresh generations failed:', err);
+      const msg = err?.message ? `Refresh failed: ${err.message}` : 'Refresh failed';
+      showToast(msg, 'error', '❌');
+    });
+  });
+}
+
+if (videoNextPageBtn) {
+  videoNextPageBtn.addEventListener('click', () => {
+    const total = getTotalPages();
+    if (videoPage < total) {
+      videoPage += 1;
+      renderVideoPage();
+    }
+  });
+}
+
+if (videoPrevPageBtn) {
+  videoPrevPageBtn.addEventListener('click', () => {
+    if (videoPage > 1) {
+      videoPage -= 1;
+      renderVideoPage();
+    }
   });
 }
 
@@ -885,6 +1005,8 @@ function updateHakDot() {
   if (!dot) return;
   dot.style.background = state.apiKey ? 'var(--green, #22c55e)' : 'var(--red, #ef4444)';
   dot.style.opacity = state.apiKey ? '1' : '0.5';
+  if (hakWidget) hakWidget.classList.toggle('needs-key', !state.apiKey);
+  if (hakTooltip) hakTooltip.classList.toggle('hidden', !!state.apiKey);
 }
 
 // Widget open/close
@@ -2134,7 +2256,7 @@ function createPlaceholderJob(jobConfig) {
     _placeholder: true,
   };
   state.jobs.unshift(job);
-  renderJobCard(job);
+  renderVideoPage();
   updateEmptyState();
   updateQueueUI();
   return id;
@@ -2249,7 +2371,7 @@ async function submitGeneration(jobConfig, { focusOnError = false, skipValidatio
   };
     if (placeholderId) removeJobSilently(placeholderId);
     state.jobs.unshift(job);
-    renderJobCard(job);
+    renderVideoPage();
     updateEmptyState();
     updateQueueUI();
     saveVideoJob(job, null);
@@ -2355,6 +2477,8 @@ function pollJob(taskId, { initialElapsed = 0 } = {}) {
         // Avoid downloading the full video on generation completion.
         // Only save the URL; the video will be fetched when the user plays or downloads it.
         saveVideoJob(job || buildFallbackJob(taskId, 'succeeded', videoUrl || null), null);
+        // Auto-cache the video blob for faster editing.
+        if (job?.id) ensureVideoCached(job.id, { silent: true });
         window.syncMediaLibrary?.();
         decrementActive();
         showToast('✅ Video ready!', 'success', '🎉');
@@ -2392,10 +2516,77 @@ function pollJob(taskId, { initialElapsed = 0 } = {}) {
 
 // ── Video Cards ───────────────────────────────────────────────
 function updateEmptyState() {
-  emptyState.classList.toggle('hidden', state.jobs.length > 0);
+  const visibleCount = getSortedJobs().filter(j => j.status !== 'failed').length;
+  emptyState.classList.toggle('hidden', visibleCount > 0);
 }
 
-function renderJobCard(job) {
+function getSortedJobs() {
+  return [...state.jobs].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+}
+
+function splitJobsForPaging() {
+  const sorted = getSortedJobs();
+  const running = sorted.filter(j => j.status === 'running' || j.status === 'queued');
+  const others = sorted.filter(j => !(j.status === 'running' || j.status === 'queued') && j.status !== 'failed');
+  return { running, others };
+}
+
+function getTotalPages() {
+  const { others } = splitJobsForPaging();
+  return Math.max(1, Math.ceil(others.length / VIDEO_PAGE_SIZE));
+}
+
+function updatePaginationControls() {
+  const totalPages = getTotalPages();
+  if (videoPrevPageBtn) {
+    videoPrevPageBtn.hidden = totalPages <= 1;
+    videoPrevPageBtn.disabled = videoPage <= 1;
+  }
+  if (videoNextPageBtn) {
+    videoNextPageBtn.hidden = totalPages <= 1;
+    videoNextPageBtn.disabled = videoPage >= totalPages;
+  }
+}
+
+function renderVideoPage() {
+  const { running, others } = splitJobsForPaging();
+  const totalPages = Math.max(1, Math.ceil(others.length / VIDEO_PAGE_SIZE));
+  if (videoPage > totalPages) videoPage = totalPages;
+  if (videoPage < 1) videoPage = 1;
+
+  let visible = [];
+  if (videoPage === 1 && running.length) {
+    visible = running.slice(0, VIDEO_PAGE_SIZE);
+    const remaining = VIDEO_PAGE_SIZE - visible.length;
+    if (remaining > 0) visible = visible.concat(others.slice(0, remaining));
+  } else {
+    const start = (videoPage - 1) * VIDEO_PAGE_SIZE;
+    visible = others.slice(start, start + VIDEO_PAGE_SIZE);
+  }
+
+  videoGrid.innerHTML = '';
+  visible.forEach(job => {
+    renderJobCard(job, { skipPageCheck: true });
+    if (job.status === 'succeeded') updateJobCard(job.id, 'succeeded', job.videoUrl);
+    else if (job.status === 'failed') updateJobCard(job.id, 'failed');
+  });
+  updatePaginationControls();
+}
+
+function renderJobCard(job, { skipPageCheck = false } = {}) {
+  if (job?.status === 'failed') return;
+  if (!skipPageCheck) {
+    const sorted = getSortedJobs();
+    const idx = sorted.findIndex(j => j.id === job.id);
+    const start = (videoPage - 1) * VIDEO_PAGE_SIZE;
+    const end = start + VIDEO_PAGE_SIZE;
+    const existing = videoGrid.querySelector(`#card-${job.id}`);
+    if (idx < start || idx >= end) {
+      if (existing) existing.remove();
+      updatePaginationControls();
+      return;
+    }
+  }
   const card = document.createElement('div');
   card.className = 'video-card';
   card.id = `card-${job.id}`;
@@ -2439,10 +2630,6 @@ function renderJobCard(job) {
       </div>
       <p class="card-prompt">${escHtml(job.prompt)}</p>
       <div class="card-actions" id="actions-${job.id}">
-        <button class="card-btn" disabled style="flex:1; opacity:0.4; cursor:default;">
-          <span class="spinner sm purple"></span>
-          Generating…
-        </button>
         <button class="card-btn danger" data-action="cancel-job">Cancel</button>
         <button class="card-btn" data-action="copy-id">Copy Task ID</button>
         <button class="card-btn" data-action="toggle-poll">Pause polling</button>
@@ -2474,6 +2661,26 @@ function renderJobCard(job) {
   else videoGrid.appendChild(card);
 }
 
+function updateCacheTagForCard(taskId, job) {
+  if (!taskId || !job) return;
+  const card = $(`card-${taskId}`);
+  const meta = card?.querySelector('.card-meta');
+  if (!meta) return;
+  const cached = !!(job.videoBlob || job._cachedUrl);
+  const existing = meta.querySelector('.card-tag.cached');
+  if (!cached) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) return;
+  const tag = document.createElement('span');
+  tag.className = 'card-tag cached';
+  tag.textContent = 'Cached';
+  const timeTag = meta.querySelector('.card-tag[style*="margin-left"]');
+  if (timeTag) meta.insertBefore(tag, timeTag);
+  else meta.appendChild(tag);
+}
+
 function updateJobCard(taskId, status, videoUrl) {
   const thumbEl = $(`thumb-${taskId}`);
   const overlayEl = $(`status-overlay-${taskId}`);
@@ -2497,6 +2704,9 @@ function updateJobCard(taskId, status, videoUrl) {
       const img = document.createElement('img');
       img.src = thumbUrl;
       img.alt = 'Thumbnail';
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.objectFit = 'contain';
       thumbEl.appendChild(img);
     } else {
       const ph = document.createElement('div');
@@ -2512,9 +2722,11 @@ function updateJobCard(taskId, status, videoUrl) {
     play.addEventListener('click', e => {
       e.preventDefault();
       e.stopPropagation();
+      ensureVideoCached(taskId, { silent: true });
       loadVideoIntoCard(taskId, resolvedUrl);
     });
     thumbEl.appendChild(play);
+    updateCacheTagForCard(taskId, job);
 
     actionsEl.innerHTML = `
       <a class="card-btn" href="${escHtml(resolvedUrl)}" target="_blank" rel="noopener" download>
@@ -2573,27 +2785,11 @@ function updateJobCard(taskId, status, videoUrl) {
       clearInterval(activePolls.get(taskId));
       activePolls.delete(taskId);
     }
-    overlayEl.innerHTML = `
-      <div class="status-icon">✕</div>
-      <span class="card-status-text" style="color: var(--red);">Generation failed</span>
-    `;
-    overlayEl.classList.add('failed');
-    actionsEl.innerHTML = `
-      <button class="card-btn" data-action="retry-job">
-        <svg viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 0 1 13.66-5.66L20 8M20 8V3M20 8h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 12a8 8 0 0 1-13.66 5.66L4 16M4 16v5M4 16h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        Retry
-      </button>
-      <button class="card-btn" data-action="copy-id">Copy Task ID</button>
-    `;
-    actionsEl.querySelector('[data-action="retry-job"]')?.addEventListener('click', () => retryFromJob(taskId));
-    actionsEl.querySelector('[data-action="copy-id"]')?.addEventListener('click', () => {
-      navigator.clipboard.writeText(taskId).then(() => showToast('Task ID copied', 'success', '📋'));
-    });
     const card = $(`card-${taskId}`);
     if (card) {
-      card.classList.remove('generating');
-      card.style.borderColor = 'rgba(239,68,68,0.3)';
+      card.remove();
     }
+    renderVideoPage();
   }
 
   updateQueueUI();
@@ -2666,21 +2862,70 @@ function loadVideoIntoCard(taskId, videoUrl) {
   });
   thumbEl.innerHTML = '';
   const video = document.createElement('video');
-  video.src = getProxiedVideoUrl(videoUrl);
+  const job = state.jobs.find(j => j.id === taskId);
+  const cachedSrc = job?.videoBlob ? URL.createObjectURL(job.videoBlob) : job?._cachedUrl;
+  video.src = cachedSrc || getProxiedVideoUrl(videoUrl);
   video.controls = true;
   video.loop = true;
   video.playsInline = true;
   video.preload = 'metadata';
+  video.style.width = '100%';
+  video.style.height = '100%';
+  video.style.objectFit = 'contain';
+  video.style.background = '#000';
   thumbEl.appendChild(video);
+  updateCacheTagForCard(taskId, job);
   video.addEventListener('play', () => {
     document.querySelectorAll('.video-card-thumb video').forEach(v => {
       if (v !== video && !v.paused) v.pause();
     });
   });
   video.addEventListener('error', () => {
-    showToast('Video failed to load. Try refresh or regenerate.', 'error', '⚠️');
+    const jobRef = state.jobs.find(j => j.id === taskId);
+    const now = Date.now();
+    const lastAttempt = jobRef?._lastVideoRefreshAttempt || 0;
+    const allowAutoRefresh = now - lastAttempt > 5 * 60 * 1000;
+    if (jobRef && allowAutoRefresh && window.refreshJobVideoUrl) {
+      jobRef._lastVideoRefreshAttempt = now;
+      refreshJobVideoUrl(taskId, { silent: true }).then(fresh => {
+        const proxied = fresh ? getProxiedVideoUrl(fresh) : null;
+        if (proxied && video.src !== proxied) {
+          video.src = proxied;
+          try { video.load(); } catch { }
+          video.play().catch(() => { });
+          showToast('Video link refreshed', 'info', '🔁');
+          return;
+        }
+        showVideoLoadError(thumbEl, taskId);
+      }).catch(() => {
+        showVideoLoadError(thumbEl, taskId);
+      });
+      return;
+    }
+    showVideoLoadError(thumbEl, taskId);
   });
   video.play().catch(() => { });
+
+  if (!cachedSrc && job?.id) {
+    ensureVideoCached(job.id, { silent: true }).then(cachedUrl => {
+      if (!cachedUrl) return;
+      if (video.src !== cachedUrl) {
+        video.src = cachedUrl;
+        try { video.load(); } catch { }
+        video.play().catch(() => { });
+      }
+    }).catch(() => {});
+  }
+}
+
+function showVideoLoadError(thumbEl, taskId) {
+  if (!thumbEl) return;
+  thumbEl.innerHTML = `
+    <div class="thumb-placeholder">
+      Link expired.
+    </div>
+  `;
+  showToast('Video failed to load. Refresh the link or regenerate.', 'error', '⚠️');
 }
 
 function extractVideoUrl(data) {
@@ -2705,26 +2950,72 @@ function scheduleRemoteSync() {
   }, 500);
 }
 
+async function refreshGenerations({ silent = false } = {}) {
+  if (!state.apiKey) {
+    showToast('Add your API key to refresh generations', 'error', '⚠️');
+    return;
+  }
+  videoPage = 1;
+  if (!silent) showToast('Refreshing generations…', 'info', '🔄');
+  await syncRemoteGenerations();
+  resetFailedThumbnails();
+  updateEmptyState();
+  if (!silent) showToast('Generations refreshed', 'success', '✅');
+}
+
+function resetFailedThumbnails() {
+  let changed = false;
+  state.jobs.forEach(job => {
+    if (job.status === 'succeeded' && job.videoUrl && job.thumbDisabled) {
+      job.thumbDisabled = false;
+      job._thumbLoading = false;
+      job._thumbRefreshAttempt = false;
+      changed = true;
+      saveVideoJob(job, job.videoBlob || null);
+    }
+  });
+  if (changed) renderVideoPage();
+}
+
 async function syncRemoteGenerations() {
   if (!state.apiKey || listSyncInFlight) return;
   listSyncInFlight = true;
   try {
-    const url = new URL(API_BASE);
-    url.searchParams.set('page_num', '1');
-    url.searchParams.set('page_size', '50');
-    // Note: filter key names may differ; adjust if your API expects a different schema.
-    url.searchParams.set('filter.status', 'succeeded');
-    const res = await fetch(url.toString(), {
-      headers: { 'Authorization': `Bearer ${state.apiKey}` },
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || `HTTP ${res.status}`);
+    const pageSize = 50;
+    const maxPages = 20;
+    const allItems = [];
+    for (let page = 1; page <= maxPages; page += 1) {
+      const url = new URL(API_BASE, window.location.origin);
+      url.searchParams.set('page_num', String(page));
+      url.searchParams.set('page_size', String(pageSize));
+      const res = await fetch(url.toString(), {
+        headers: { 'Authorization': `Bearer ${state.apiKey}` },
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const errJson = errText ? JSON.parse(errText) : {};
+          errMsg = errJson.message || errJson.error?.message || errMsg;
+        } catch {
+          if (errText) errMsg = errText.slice(0, 200);
+        }
+        throw new Error(errMsg);
+      }
+      const data = await res.json().catch(() => ({}));
+      const items = data.items || data.data?.items || data.tasks || data.data || [];
+      if (!Array.isArray(items) || items.length === 0) break;
+      allItems.push(...items);
+      if (items.length < pageSize) break;
     }
-    const data = await res.json().catch(() => ({}));
-    const items = data.items || data.data?.items || data.tasks || data.data || [];
-    if (!Array.isArray(items)) return;
-    items.forEach(item => upsertRemoteJob(item));
+    if (!allItems.length) return;
+    const seen = new Set();
+    allItems.forEach(item => {
+      const id = item.id || item.task_id || item.taskId;
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      upsertRemoteJob(item);
+    });
     updateEmptyState();
   } finally {
     listSyncInFlight = false;
@@ -2755,7 +3046,6 @@ function upsertRemoteJob(item) {
   if (!job) {
     job = { id, status, videoUrl, prompt, model, ratio, duration, resolution, returnLastFrame, serviceTier, timestamp, draft, mode, promptText, tokensUsed, lastFrameUrl };
     state.jobs.push(job);
-    renderJobCard(job);
   } else {
     job.status = status;
     job.videoUrl = videoUrl || job.videoUrl;
@@ -2777,7 +3067,9 @@ function upsertRemoteJob(item) {
   else if (status === 'failed') updateJobCard(id, 'failed');
 
   saveVideoJob(job, job.videoBlob || null);
+  renderVideoPage();
 }
+
 
 async function ensureThumbnail(job, taskId, videoUrl) {
   if (!job) return;
@@ -2786,11 +3078,49 @@ async function ensureThumbnail(job, taskId, videoUrl) {
   try {
     const thumb = await fetchVideoThumbnail(videoUrl);
     if (!thumb) {
+      if (!job._thumbRefreshAttempt && window.refreshJobVideoUrl) {
+        job._thumbRefreshAttempt = true;
+        const freshUrl = await refreshJobVideoUrl(taskId, { silent: true });
+        if (freshUrl && freshUrl !== videoUrl) {
+          const retryThumb = await fetchVideoThumbnail(freshUrl);
+          if (retryThumb) {
+            job.thumbDataUrl = retryThumb;
+            await saveVideoJob(job, job.videoBlob || null);
+            const thumbEl = $(`thumb-${taskId}`);
+            if (thumbEl) {
+              thumbEl.innerHTML = '';
+              const img = document.createElement('img');
+              img.src = retryThumb;
+              img.alt = 'Thumbnail';
+              img.style.width = '100%';
+              img.style.height = '100%';
+              img.style.objectFit = 'contain';
+              thumbEl.appendChild(img);
+              updateCacheTagForCard(taskId, job);
+              if (freshUrl && !thumbEl.querySelector('.thumb-play-btn')) {
+                const play = document.createElement('button');
+                play.className = 'thumb-play-btn';
+                play.innerHTML = `<svg viewBox="0 0 24 24" fill="none"><polygon points="7,5 19,12 7,19" fill="currentColor"/></svg>`;
+                play.title = 'Play';
+                play.addEventListener('click', e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  loadVideoIntoCard(taskId, freshUrl);
+                });
+                thumbEl.appendChild(play);
+              }
+            }
+            window.syncMediaLibrary?.();
+            return;
+          }
+        }
+      }
       job.thumbDisabled = true;
       await saveVideoJob(job, job.videoBlob || null);
       const holder = $(`thumb-${taskId}`);
       const placeholder = holder?.querySelector('.thumb-placeholder');
       if (placeholder) placeholder.textContent = 'Thumbnail unavailable';
+      renderVideoPage();
       return;
     }
     job.thumbDataUrl = thumb;
@@ -2801,7 +3131,11 @@ async function ensureThumbnail(job, taskId, videoUrl) {
       const img = document.createElement('img');
       img.src = thumb;
       img.alt = 'Thumbnail';
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.objectFit = 'contain';
       thumbEl.appendChild(img);
+      updateCacheTagForCard(taskId, job);
       if (videoUrl && !thumbEl.querySelector('.thumb-play-btn')) {
         const play = document.createElement('button');
         play.className = 'thumb-play-btn';
@@ -2825,18 +3159,26 @@ async function ensureThumbnail(job, taskId, videoUrl) {
 
 async function fetchVideoThumbnail(videoUrl) {
   // Prefer server-side thumbnail if available
-  if (location.protocol !== 'file:' && location.origin !== 'null') {
+  let ffmpegMissing = false;
+  if (location.protocol !== 'file:' && location.origin !== 'null' && !serverThumbsDisabled) {
     try {
       const res = await fetch(`/api/thumb?url=${encodeURIComponent(videoUrl)}`);
       if (res.ok) {
         const blob = await res.blob();
         return await blobToDataUrl(blob);
       }
-      await res.json().catch(() => ({}));
+      const errData = await res.json().catch(() => ({}));
+      if (res.status === 501 || errData?.error === 'ffmpeg_not_found') {
+        ffmpegMissing = true;
+        serverThumbsDisabled = true;
+      }
     } catch (e) {
     }
   }
   // Fallback: client-side capture (may still be lightweight)
+  if (ffmpegMissing) {
+    return await captureThumbnailClient(videoUrl);
+  }
   return await captureThumbnailClient(videoUrl);
 }
 
@@ -2844,6 +3186,10 @@ function captureThumbnailClient(videoUrl) {
   return new Promise((resolve, reject) => {
     const v = document.createElement('video');
     const src = getProxiedVideoUrl(videoUrl);
+    if (src === videoUrl && /^https?:/i.test(videoUrl)) {
+      resolve(null);
+      return;
+    }
     v.src = src;
     v.preload = 'metadata';
     v.muted = true;

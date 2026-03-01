@@ -11,6 +11,14 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const LOG_PATH = path.join(os.homedir(), 'Library', 'Logs', 'VibedStudio.log');
+
+function log(message) {
+  try {
+    fs.appendFileSync(LOG_PATH, `[${new Date().toISOString()}] ${message}\n`);
+  } catch {
+  }
+}
 
 const FFMPEG_RELEASE = 'b6.1.1';
 const FFMPEG_BINARIES_URL = process.env.FFMPEG_BINARIES_URL
@@ -75,6 +83,7 @@ async function ensureFfmpeg({ allowDownload }) {
 }
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+const ARK_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3';
 
 function sendJson(res, status, payload) {
   const body = Buffer.from(JSON.stringify(payload));
@@ -112,6 +121,39 @@ function proxyRequest(req, res, url) {
     sendJson(res, 502, { error: 'proxy_failed', message: err.message });
   });
   upstream.end();
+}
+
+function proxyArk(req, res, parsed) {
+  const tail = parsed.pathname.replace(/^\/api\/ark/, '');
+  const targetUrl = new URL(ARK_BASE_URL + (tail.startsWith('/') ? tail : `/${tail}`));
+  parsed.searchParams.forEach((value, key) => {
+    targetUrl.searchParams.append(key, value);
+  });
+
+  const headers = {
+    'User-Agent': USER_AGENT,
+    'Accept': req.headers.accept || 'application/json',
+    'Accept-Encoding': 'identity',
+  };
+  if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
+  if (req.headers.authorization) headers.Authorization = req.headers.authorization;
+
+  const upstream = https.request(targetUrl, { method: req.method, headers }, upstreamRes => {
+    res.statusCode = upstreamRes.statusCode || 502;
+    const passHeaders = ['content-type'];
+    passHeaders.forEach(h => {
+      if (upstreamRes.headers[h]) res.setHeader(h, upstreamRes.headers[h]);
+    });
+    upstreamRes.pipe(res);
+  });
+  upstream.on('error', err => {
+    sendJson(res, 502, { error: 'proxy_failed', message: err.message });
+  });
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    upstream.end();
+  } else {
+    req.pipe(upstream);
+  }
 }
 
 function getMimeType(filePath) {
@@ -248,9 +290,20 @@ async function handleExportRequest(req, res) {
 
 async function startServer() {
   const rootDir = path.join(__dirname, '..');
+  log(`Server starting, rootDir=${rootDir}`);
   const server = http.createServer((req, res) => {
     const method = req.method || 'GET';
     const parsed = new URL(req.url || '/', 'http://localhost');
+
+    if (parsed.pathname.startsWith('/api/ark/')) {
+      if (method !== 'GET' && method !== 'POST' && method !== 'DELETE') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      proxyArk(req, res, parsed);
+      return;
+    }
 
     if (parsed.pathname === '/api/export') {
       if (method !== 'POST') {
@@ -325,9 +378,13 @@ async function startServer() {
 
     serveStatic(req, res, rootDir, parsed.pathname);
   });
+  server.on('error', err => {
+    log(`Server error: ${err?.stack || err}`);
+  });
 
   const port = await findOpenPort([8787, 8788, 8789, 0]);
   await new Promise(resolve => server.listen(port, resolve));
+  log(`Server listening on ${port}`);
   return port;
 }
 
