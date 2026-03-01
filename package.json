@@ -1,6 +1,6 @@
 {
   "name": "vibedstudio",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Local-first AI video studio for BytePlus generation and editing.",
   "author": "VibedStudio",
   "private": true,
@@ -23,8 +23,20 @@
     "icon": "build/icon.png",
     "appId": "com.vibedstudio.app",
     "productName": "VibedStudio",
+    "compression": "maximum",
     "asarUnpack": [
       "node_modules/ffmpeg-static/**"
+    ],
+    "files": [
+      "desktop/**",
+      "index.html",
+      "app.js",
+      "style.css",
+      "editor.js",
+      "editor.css",
+      "images.js",
+      "images.css",
+      "package.json"
     ],
     "directories": {
       "buildResources": "build",
