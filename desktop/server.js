@@ -144,7 +144,10 @@ async function findOpenPort(candidates) {
 
 async function startServer() {
   const rootDir = path.join(__dirname, '..');
-  const ffmpegPath = await getFfmpegPath();
+  let ffmpegPath = await getFfmpegPath();
+  if (ffmpegPath && ffmpegPath.includes('app.asar')) {
+    ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+  }
   const server = http.createServer((req, res) => {
     const method = req.method || 'GET';
     if (method !== 'GET' && method !== 'HEAD') {
