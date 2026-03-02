@@ -4,15 +4,110 @@ Minimal CORS-aware dev server for VibedStudio.
 Run: python3 server.py
 Then open: http://localhost:8080
 """
-import http.server, socketserver, os, sys, json, urllib.request, urllib.error, urllib.parse, tempfile, subprocess, shutil, gzip, re, time
+import http.server, socketserver, os, sys, json, urllib.request, urllib.error, urllib.parse, tempfile, subprocess, shutil, gzip, re, time, hashlib
 
 PORT = 8787
 IMAGE_PROXY_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3/images/generations'
 ARK_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3'
+OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/generations'
+SONAUTO_BASE_URL = 'https://api.sonauto.ai/v1'
 PROJECT_DIR = os.path.join(os.getcwd(), 'projects')
+IMAGE_HISTORY_LIMIT = 200
 
 def ensure_project_dir():
     os.makedirs(PROJECT_DIR, exist_ok=True)
+
+def extract_bearer_token(auth_header):
+    if not auth_header:
+        return ''
+    value = auth_header.strip()
+    if value.lower().startswith('bearer '):
+        return value.split(' ', 1)[1].strip()
+    return value
+
+def get_image_history_path(api_key, provider):
+    ensure_project_dir()
+    key = extract_bearer_token(api_key)
+    if not key:
+        return None
+    digest = hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]
+    safe_provider = re.sub(r'[^a-z0-9_-]+', '-', provider or 'image')
+    return os.path.join(PROJECT_DIR, f'image-history-{safe_provider}-{digest}.json')
+
+def load_image_history(api_key, provider):
+    path = get_image_history_path(api_key, provider)
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return data.get('images', []) if isinstance(data, dict) else []
+    except Exception:
+        return []
+
+def save_image_history(api_key, provider, images):
+    path = get_image_history_path(api_key, provider)
+    if not path:
+        return
+    ensure_project_dir()
+    payload = {'images': images[-IMAGE_HISTORY_LIMIT:]}
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f)
+
+def extract_image_urls(payload):
+    urls = []
+    def walk(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in ('url', 'image_url') and isinstance(v, str):
+                    urls.append(v)
+                else:
+                    walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
+    walk(payload)
+    deduped = []
+    seen = set()
+    for u in urls:
+        if u in seen:
+            continue
+        seen.add(u)
+        deduped.append(u)
+    return deduped
+
+def store_image_history(auth_header, provider, req_payload, resp_payload):
+    if not auth_header:
+        return
+    urls = extract_image_urls(resp_payload or {})
+    if not urls:
+        return
+    history = load_image_history(auth_header, provider)
+    existing = {item.get('url') for item in history if isinstance(item, dict) and item.get('url')}
+    prompt = (req_payload or {}).get('prompt', '')
+    model = (req_payload or {}).get('model', '')
+    size = (req_payload or {}).get('size', '')
+    fmt = (req_payload or {}).get('output_format') or (req_payload or {}).get('format') or ''
+    timestamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    new_items = []
+    for url in urls:
+        if url in existing:
+            continue
+        new_items.append({
+            'id': f'img-{int(time.time() * 1000)}',
+            'url': url,
+            'prompt': prompt,
+            'model': model,
+            'size': size,
+            'format': fmt,
+            'provider': provider,
+            'timestamp': timestamp,
+        })
+        existing.add(url)
+    if not new_items:
+        return
+    history.extend(new_items)
+    save_image_history(auth_header, provider, history)
 
 def safe_project_name(name):
     base = re.sub(r'[^a-zA-Z0-9_-]+', '-', name or '').strip('-')
@@ -24,8 +119,17 @@ def safe_project_name(name):
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith('/api/image/history'):
+            self.handle_image_history('byteplus')
+            return
+        if self.path.startswith('/api/openai/images/history'):
+            self.handle_image_history('openai')
+            return
         if self.path.startswith('/api/ark/'):
             self.handle_ark_proxy('GET')
+            return
+        if self.path.startswith('/api/sonauto/'):
+            self.handle_sonauto_proxy('GET')
             return
         if self.path.startswith('/api/project/list'):
             self.handle_project_list()
@@ -40,6 +144,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.handle_video_proxy()
             return
         return super().do_GET()
+
+    def copyfile(self, source, outputfile):
+        try:
+            return super().copyfile(source, outputfile)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
@@ -54,6 +165,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith('/api/ark/'):
             self.handle_ark_proxy('DELETE')
             return
+        if self.path.startswith('/api/sonauto/'):
+            self.handle_sonauto_proxy('DELETE')
+            return
         self.send_response(404)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
@@ -62,6 +176,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/api/image':
             self.handle_image_proxy()
+            return
+        if self.path == '/api/openai/images':
+            self.handle_openai_images()
+            return
+        if self.path.startswith('/api/sonauto/'):
+            self.handle_sonauto_proxy('POST')
             return
         if self.path == '/api/export':
             self.handle_export()
@@ -81,6 +201,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         # Unreachable, but keep for clarity
         return
+
+    def handle_image_history(self, provider):
+        auth = self.headers.get('Authorization', '')
+        images = load_image_history(auth, provider)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(json.dumps({
+            'provider': provider,
+            'images': images,
+        }).encode('utf-8'))
 
     def handle_image_proxy(self):
         length = int(self.headers.get('Content-Length', 0))
@@ -122,11 +253,98 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 'message': str(e),
             }).encode('utf-8'))
 
+    def handle_openai_images(self):
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length)
+
+        req = urllib.request.Request(OPENAI_IMAGE_URL, data=body, method='POST')
+        content_type = self.headers.get('Content-Type') or 'application/json'
+        req.add_header('Content-Type', content_type)
+        auth = self.headers.get('Authorization')
+        if auth:
+            req.add_header('Authorization', auth)
+        accept = self.headers.get('Accept')
+        if accept:
+            req.add_header('Accept', accept)
+
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+                self.send_response(resp.status)
+                ct = resp.headers.get('Content-Type')
+                if ct:
+                    self.send_header('Content-Type', ct)
+                self.end_headers()
+                self.wfile.write(data)
+        except urllib.error.HTTPError as e:
+            data = e.read()
+            self.send_response(e.code)
+            ct = e.headers.get('Content-Type')
+            if ct:
+                self.send_header('Content-Type', ct)
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_response(502)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': 'Bad gateway',
+                'message': str(e),
+            }).encode('utf-8'))
+
     def handle_ark_proxy(self, method):
         target = self.path[len('/api/ark'):]
         if not target.startswith('/'):
             target = '/' + target
         url = ARK_BASE_URL + target
+        body = None
+        if method in ('POST', 'PUT', 'PATCH'):
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length) if length else b''
+
+        req = urllib.request.Request(url, data=body, method=method)
+        content_type = self.headers.get('Content-Type')
+        if content_type:
+            req.add_header('Content-Type', content_type)
+        auth = self.headers.get('Authorization')
+        if auth:
+            req.add_header('Authorization', auth)
+        accept = self.headers.get('Accept')
+        if accept:
+            req.add_header('Accept', accept)
+
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+                self.send_response(resp.status)
+                ct = resp.headers.get('Content-Type')
+                if ct:
+                    self.send_header('Content-Type', ct)
+                self.end_headers()
+                self.wfile.write(data)
+        except urllib.error.HTTPError as e:
+            data = e.read()
+            self.send_response(e.code)
+            ct = e.headers.get('Content-Type')
+            if ct:
+                self.send_header('Content-Type', ct)
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_response(502)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': 'Bad gateway',
+                'message': str(e),
+            }).encode('utf-8'))
+
+    def handle_sonauto_proxy(self, method):
+        target = self.path[len('/api/sonauto'):]
+        if not target.startswith('/'):
+            target = '/' + target
+        url = SONAUTO_BASE_URL + target
         body = None
         if method in ('POST', 'PUT', 'PATCH'):
             length = int(self.headers.get('Content-Length', 0))

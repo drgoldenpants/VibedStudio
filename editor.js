@@ -3,6 +3,9 @@
    Timeline editor: media library, drag-drop, playback, export
    ============================================================ */
 
+const PROJECT_AUTOSAVE_KEY = 'vibedstudio_project_autosave';
+const PROJECT_AUTOSAVE_INTERVAL_MS = 3 * 60 * 1000;
+
 // ── Editor State ──────────────────────────────────────────────
 const editorState = {
     mediaItems: [],
@@ -44,11 +47,21 @@ const editorState = {
     clipboardTrackId: null,
     effectLibraryReady: false,
     textPresetsReady: false,
+    generatedMediaTab: 'video',
+    timelineUndo: [],
+    timelineRedo: [],
+    historyLock: false,
+    projectAutosaveEnabled: localStorage.getItem(PROJECT_AUTOSAVE_KEY) === '1',
+    projectAutosaveTimer: null,
+    projectSaveTarget: null,
+    projectAutosaveBusy: false,
 };
 
 let editorInited = false;
 const TIMELINE_MIN_SECONDS = 300;
 const TRANSITION_DUR = 0.5;
+const TIMELINE_HISTORY_LIMIT = 50;
+const TIMELINE_TAIL_SECONDS = 2;
 
 // ── DOM helpers ───────────────────────────────────────────────
 const eq = id => document.getElementById(id);
@@ -63,6 +76,90 @@ const previewGuideRight = eq('preview-guide-right');
 const previewGuideTop = eq('preview-guide-top');
 const previewGuideBottom = eq('preview-guide-bottom');
 
+function cloneTrackForHistory(track) {
+    return {
+        id: track.id,
+        type: track.type,
+        name: track.name,
+        segments: (track.segments || []).map(seg => cloneSegmentData(seg)),
+    };
+}
+
+function snapshotTimelineState() {
+    return {
+        tracks: editorState.tracks.map(cloneTrackForHistory),
+        transitions: editorState.transitions.map(t => ({ ...t })),
+        selectedSegId: editorState.selectedSegId,
+        previewSegId: editorState.previewSegId,
+        currentTime: editorState.currentTime,
+        timelineDur: editorState.timelineDur,
+    };
+}
+
+function applyTimelineState(state) {
+    if (!state) return;
+    editorState.historyLock = true;
+    editorState.tracks = (state.tracks || []).map(t => ({
+        id: t.id,
+        type: t.type,
+        name: t.name,
+        segments: (t.segments || []).map(s => ({
+            ...cloneSegmentData(s),
+            transform: s.transform ? { ...s.transform } : { x: 0, y: 0, scale: 1 },
+        })),
+    }));
+    editorState.transitions = Array.isArray(state.transitions) ? state.transitions.map(t => ({ ...t })) : [];
+    editorState.selectedSegId = state.selectedSegId || null;
+    editorState.previewSegId = state.previewSegId || null;
+    editorState.timelineDur = state.timelineDur || editorState.timelineDur;
+    renderTimeline();
+    seekTo(state.currentTime || 0);
+    updatePreviewSelection();
+    editorState.historyLock = false;
+}
+
+function pushTimelineHistory(snapshot) {
+    if (editorState.historyLock) return;
+    const state = snapshot || snapshotTimelineState();
+    const hash = JSON.stringify({ tracks: state.tracks, transitions: state.transitions });
+    const last = editorState.timelineUndo[editorState.timelineUndo.length - 1];
+    if (last && last._hash === hash) return;
+    state._hash = hash;
+    editorState.timelineUndo.push(state);
+    if (editorState.timelineUndo.length > TIMELINE_HISTORY_LIMIT) {
+        editorState.timelineUndo.shift();
+    }
+    editorState.timelineRedo = [];
+}
+
+function pushTimelineRedo(snapshot) {
+    const state = snapshot || snapshotTimelineState();
+    const hash = JSON.stringify({ tracks: state.tracks, transitions: state.transitions });
+    const last = editorState.timelineRedo[editorState.timelineRedo.length - 1];
+    if (last && last._hash === hash) return;
+    state._hash = hash;
+    editorState.timelineRedo.push(state);
+    if (editorState.timelineRedo.length > TIMELINE_HISTORY_LIMIT) {
+        editorState.timelineRedo.shift();
+    }
+}
+
+function undoTimeline() {
+    if (!editorState.timelineUndo.length) return;
+    const current = snapshotTimelineState();
+    pushTimelineRedo(current);
+    const prev = editorState.timelineUndo.pop();
+    applyTimelineState(prev);
+}
+
+function redoTimeline() {
+    if (!editorState.timelineRedo.length) return;
+    const current = snapshotTimelineState();
+    pushTimelineHistory(current);
+    const next = editorState.timelineRedo.pop();
+    applyTimelineState(next);
+}
+
 function ensureMediaDimensions(media) {
     if (!media || media._dimPending || (media.width && media.height)) return;
     media._dimPending = true;
@@ -74,7 +171,13 @@ function ensureMediaDimensions(media) {
             media._dimPending = false;
         };
         img.onerror = () => { media._dimPending = false; };
-        img.src = media.src || '';
+        const src = getEditorMediaPlaybackSrc(media);
+        if (!src) {
+            media._dimPending = false;
+            if (media.id) ensureEditorMediaCache(media.id, media.type);
+            return;
+        }
+        img.src = src;
         return;
     }
     if (media.type === 'video') {
@@ -89,8 +192,161 @@ function ensureMediaDimensions(media) {
             v.src = '';
         };
         v.onerror = () => { media._dimPending = false; };
-        v.src = media.src || '';
+        const src = getEditorVideoPlaybackSrc(media);
+        if (!src) {
+            media._dimPending = false;
+            if (media.id) ensureEditorVideoCache(media.id);
+            return;
+        }
+        v.src = src;
     }
+}
+
+function applyCachedEditorVideoSrc(mediaId, src) {
+    if (!mediaId || !src) return;
+    const media = editorState.mediaItems.find(m => m.id === mediaId);
+    if (media) {
+        media.src = src;
+        media.proxySrc = src;
+    }
+    editorState.tracks.forEach(track => {
+        track.segments.forEach(seg => {
+            if (seg.mediaId === mediaId) seg.src = src;
+        });
+    });
+}
+
+function getCachedEditorVideoSrc(mediaId) {
+    if (!mediaId) return null;
+    const media = editorState.mediaItems.find(m => m.id === mediaId);
+    if (media?.src && /^(blob:|data:)/i.test(media.src)) return media.src;
+    const job = window.state?.jobs?.find(j => j.id === mediaId);
+    if (!job) return null;
+    if (job.videoBlob instanceof Blob) {
+        if (!job._cachedUrl) {
+            try { job._cachedUrl = URL.createObjectURL(job.videoBlob); } catch { }
+        }
+        if (job._cachedUrl) {
+            applyCachedEditorVideoSrc(mediaId, job._cachedUrl);
+            return job._cachedUrl;
+        }
+    }
+    if (job._cachedUrl) {
+        applyCachedEditorVideoSrc(mediaId, job._cachedUrl);
+        return job._cachedUrl;
+    }
+    if (typeof job.videoUrl === 'string' && /^(blob:|data:)/i.test(job.videoUrl)) {
+        applyCachedEditorVideoSrc(mediaId, job.videoUrl);
+        return job.videoUrl;
+    }
+    return null;
+}
+
+function isEditorCachedSrc(src) {
+    return typeof src === 'string' && /^(blob:|data:)/i.test(src);
+}
+
+function applyCachedEditorMediaSrc(mediaId, src) {
+    if (!mediaId || !src) return;
+    const media = editorState.mediaItems.find(m => m.id === mediaId);
+    if (media) {
+        media.src = src;
+        media.proxySrc = src;
+    }
+    editorState.tracks.forEach(track => {
+        track.segments.forEach(seg => {
+            if (seg.mediaId === mediaId) seg.src = src;
+        });
+    });
+}
+
+function getCachedEditorImageSrc(mediaId) {
+    if (!mediaId) return null;
+    const media = editorState.mediaItems.find(m => m.id === mediaId);
+    if (isEditorCachedSrc(media?.src)) return media.src;
+    return null;
+}
+
+function getCachedEditorAudioSrc(mediaId) {
+    if (!mediaId) return null;
+    const media = editorState.mediaItems.find(m => m.id === mediaId);
+    if (isEditorCachedSrc(media?.src)) return media.src;
+    return null;
+}
+
+function getEditorVideoPlaybackSrc(mediaOrSeg) {
+    if (!mediaOrSeg) return '';
+    const mediaId = mediaOrSeg.mediaId || mediaOrSeg.id || null;
+    const cachedSrc = getCachedEditorVideoSrc(mediaId);
+    if (cachedSrc) return cachedSrc;
+    const directSrc = mediaOrSeg.src || '';
+    if (isEditorCachedSrc(directSrc)) return directSrc;
+    return '';
+}
+
+function getEditorMediaPlaybackSrc(mediaOrSeg) {
+    if (!mediaOrSeg) return '';
+    const type = mediaOrSeg.mediaType || mediaOrSeg.type || '';
+    if (type === 'video') return getEditorVideoPlaybackSrc(mediaOrSeg);
+    const mediaId = mediaOrSeg.mediaId || mediaOrSeg.id || null;
+    const directSrc = mediaOrSeg.src || '';
+    if (type === 'image') {
+        const media = editorState.mediaItems.find(m => m.id === mediaId);
+        const cachedSrc = isEditorCachedSrc(media?.src) ? media.src : '';
+        return cachedSrc || (isEditorCachedSrc(directSrc) ? directSrc : '');
+    }
+    if (type === 'audio') {
+        const media = editorState.mediaItems.find(m => m.id === mediaId);
+        const cachedSrc = isEditorCachedSrc(media?.src) ? media.src : '';
+        return cachedSrc || (isEditorCachedSrc(directSrc) ? directSrc : '');
+    }
+    return directSrc;
+}
+
+function ensureEditorVideoCache(mediaId) {
+    if (!mediaId || !window.ensureVideoCached) return;
+    const media = editorState.mediaItems.find(m => m.id === mediaId);
+    if (media?._cachePending) return;
+    if (getCachedEditorVideoSrc(mediaId)) return;
+    if (media) media._cachePending = true;
+    window.ensureVideoCached(mediaId, { silent: true }).then(cachedSrc => {
+        if (cachedSrc) {
+            applyCachedEditorVideoSrc(mediaId, cachedSrc);
+            if (eq('preview-layers')) updatePreviewForTime(editorState.currentTime || 0);
+        }
+    }).catch(() => {
+    }).finally(() => {
+        if (media) media._cachePending = false;
+    });
+}
+
+function ensureEditorMediaCache(mediaId, type) {
+    if (!mediaId || !type) return;
+    if (type === 'video') {
+        ensureEditorVideoCache(mediaId);
+        return;
+    }
+    const media = editorState.mediaItems.find(m => m.id === mediaId);
+    if (media?._cachePending) return;
+    const cacheFn = type === 'image'
+        ? window.ensureImageCached
+        : type === 'audio'
+            ? window.ensureAudioCached
+            : null;
+    if (!cacheFn) return;
+    const currentSrc = getEditorMediaPlaybackSrc({ id: mediaId, type });
+    if (currentSrc) return;
+    if (media) media._cachePending = true;
+    cacheFn(mediaId, { silent: true }).then(cachedSrc => {
+        if (cachedSrc) {
+            applyCachedEditorMediaSrc(mediaId, cachedSrc);
+            renderMediaList();
+            if (eq('preview-layers')) updatePreviewForTime(editorState.currentTime || 0);
+        }
+    }).catch(() => {
+    }).finally(() => {
+        if (media) media._cachePending = false;
+    });
 }
 
 function initToolbarTabs() {
@@ -109,6 +365,7 @@ function initToolbarTabs() {
 function bindHeaderProjectButtons() {
     const headerSave = eq('header-save-project');
     const headerLoad = eq('header-load-project');
+    const autosaveToggle = eq('project-autosave-toggle');
     if (headerSave && !headerSave.dataset.bound) {
         headerSave.dataset.bound = '1';
         headerSave.addEventListener('click', () => {
@@ -118,6 +375,72 @@ function bindHeaderProjectButtons() {
     if (headerLoad && !headerLoad.dataset.bound) {
         headerLoad.dataset.bound = '1';
         headerLoad.addEventListener('click', () => triggerProjectLoad());
+    }
+    if (autosaveToggle && !autosaveToggle.dataset.bound) {
+        autosaveToggle.dataset.bound = '1';
+        autosaveToggle.addEventListener('change', e => {
+            setProjectAutosaveEnabled(!!e.target.checked);
+        });
+    }
+    updateProjectAutosaveUI();
+    refreshProjectAutosaveTimer();
+}
+
+function canAutosaveProject() {
+    return !!editorState.projectSaveTarget;
+}
+
+function updateProjectAutosaveUI() {
+    const autosaveToggle = eq('project-autosave-toggle');
+    const autosaveWrap = eq('project-autosave-wrap');
+    if (!autosaveToggle || !autosaveWrap) return;
+    const enabled = !!editorState.projectAutosaveEnabled;
+    const available = canAutosaveProject();
+    autosaveToggle.checked = enabled;
+    autosaveToggle.disabled = !available;
+    autosaveWrap.classList.toggle('disabled', !available);
+    autosaveWrap.title = available
+        ? `Autosaves every ${Math.round(PROJECT_AUTOSAVE_INTERVAL_MS / 60000)} minutes`
+        : 'Autosave requires a saved project target';
+}
+
+function refreshProjectAutosaveTimer() {
+    if (editorState.projectAutosaveTimer) {
+        clearInterval(editorState.projectAutosaveTimer);
+        editorState.projectAutosaveTimer = null;
+    }
+    if (!editorState.projectAutosaveEnabled || !canAutosaveProject()) return;
+    editorState.projectAutosaveTimer = setInterval(() => {
+        saveProject({ autosave: true, silent: true }).catch(err => {
+            console.warn('Autosave failed:', err);
+        });
+    }, PROJECT_AUTOSAVE_INTERVAL_MS);
+}
+
+function setProjectSaveTarget(target) {
+    editorState.projectSaveTarget = target || null;
+    if (!editorState.projectSaveTarget) {
+        editorState.projectAutosaveEnabled = false;
+        localStorage.setItem(PROJECT_AUTOSAVE_KEY, '0');
+    } else {
+        editorState.projectAutosaveEnabled = true;
+        localStorage.setItem(PROJECT_AUTOSAVE_KEY, '1');
+    }
+    updateProjectAutosaveUI();
+    refreshProjectAutosaveTimer();
+}
+
+function setProjectAutosaveEnabled(enabled) {
+    editorState.projectAutosaveEnabled = !!enabled && canAutosaveProject();
+    localStorage.setItem(PROJECT_AUTOSAVE_KEY, editorState.projectAutosaveEnabled ? '1' : '0');
+    updateProjectAutosaveUI();
+    refreshProjectAutosaveTimer();
+    if (enabled && !canAutosaveProject()) {
+        showToast('Save the project once to enable autosave', 'info', '💾');
+    } else if (editorState.projectAutosaveEnabled) {
+        showToast(`Autosave enabled (${Math.round(PROJECT_AUTOSAVE_INTERVAL_MS / 60000)} min)`, 'success', '⏱️');
+    } else {
+        showToast('Autosave disabled', 'info', '⏸️');
     }
 }
 
@@ -312,6 +635,7 @@ document.querySelectorAll('.app-tab').forEach(btn => {
         document.getElementById('page-' + tab).classList.remove('hidden');
         if (tab === 'editor') initEditor();
         if (tab === 'images') window.initImages?.();
+        if (tab === 'audio') window.initAudio?.();
     });
 });
 
@@ -338,6 +662,7 @@ function initEditor() {
     eq('tl-zoom-out').addEventListener('click', () => setZoom(editorState.pxPerSec / 1.5));
     eq('tool-add-video-track').addEventListener('click', () => addTrack('video'));
     eq('tool-add-audio-track').addEventListener('click', () => addTrack('audio'));
+    initGeneratedMediaTabs();
     eq('tool-clear-timeline')?.addEventListener('click', clearTimeline);
     eq('tool-save-project')?.addEventListener('click', saveProject);
     eq('tool-load-project')?.addEventListener('click', () => triggerProjectLoad());
@@ -550,6 +875,7 @@ function applyPreviewTransform(seg) {
     } else {
         target.style.transform = `translate(${tx}px, ${ty}px) scale(${t.scale})`;
     }
+    if (seg?.id === editorState.previewSegId) updatePreviewScaleHandle();
 }
 
 function getActivePreviewSegment() {
@@ -610,12 +936,54 @@ function updatePreviewSelection() {
         const isSelected = segId === editorState.previewSegId || segId === editorState.selectedSegId;
         el.classList.toggle('selected', isSelected);
     });
+    updatePreviewScaleHandle();
+}
+
+function ensurePreviewScaleHandle() {
+    const stage = eq('preview-stage');
+    if (!stage) return null;
+    let handle = document.getElementById('preview-scale-handle');
+    if (!handle) {
+        handle = document.createElement('div');
+        handle.id = 'preview-scale-handle';
+        handle.className = 'preview-scale-handle';
+        stage.appendChild(handle);
+    }
+    return handle;
+}
+
+function updatePreviewScaleHandle() {
+    const stage = eq('preview-stage');
+    if (!stage) return;
+    const handle = ensurePreviewScaleHandle();
+    if (!handle) return;
+    const seg = getActivePreviewSegment();
+    if (!seg || (seg.mediaType !== 'video' && seg.mediaType !== 'image')) {
+        handle.classList.remove('visible');
+        return;
+    }
+    const rect = stage.getBoundingClientRect();
+    const t = getSegmentTransform(seg);
+    const metrics = getPreviewContentMetrics(seg, rect, t.x, t.y, t.scale);
+    if (!metrics) {
+        handle.classList.remove('visible');
+        return;
+    }
+    const size = 14;
+    handle.style.width = `${size}px`;
+    handle.style.height = `${size}px`;
+    handle.style.left = `${metrics.right - size / 2}px`;
+    handle.style.top = `${metrics.bottom - size / 2}px`;
+    handle.classList.add('visible');
 }
 
 function renderPreviewLayers(layers, t) {
     const container = eq('preview-layers');
     if (!container) return;
     const activeIds = new Set();
+    const audibleVideoSegId = layers
+        .filter(layer => layer.seg.mediaType === 'video' && !layer.seg.muted)
+        .sort((a, b) => a.trackIndex - b.trackIndex)[0]?.seg.id || null;
     layers.forEach(layer => {
         const seg = layer.seg;
         const isVideo = seg.mediaType === 'video';
@@ -633,29 +1001,35 @@ function renderPreviewLayers(layers, t) {
                 el.preload = 'auto';
                 if (!el.dataset.metaHooked) {
                     el.dataset.metaHooked = '1';
+                    const syncPreviewVideoFrame = () => {
+                        const targetTime = Number(el.dataset.previewTime || '0');
+                        if (Number.isNaN(targetTime)) return;
+                        if (Math.abs((el.currentTime || 0) - targetTime) > 0.12) {
+                            try { el.currentTime = targetTime; } catch { }
+                        }
+                        if (editorState.playing) {
+                            if (el.paused) el.play().catch(() => { });
+                        } else if (!el.paused) {
+                            el.pause();
+                        }
+                    };
                     el.addEventListener('loadedmetadata', () => {
                         if (el.videoWidth && el.videoHeight) {
                             seg._mediaW = el.videoWidth;
                             seg._mediaH = el.videoHeight;
                         }
+                        syncPreviewVideoFrame();
+                    });
+                    el.addEventListener('loadeddata', () => {
+                        syncPreviewVideoFrame();
                     });
                 }
                 el.addEventListener('error', async () => {
                     if (el.dataset.errorHandled === '1') return;
                     el.dataset.errorHandled = '1';
                     const mediaId = seg.mediaId;
-                    if (mediaId && window.refreshJobVideoUrl) {
-                        const fresh = await window.refreshJobVideoUrl(mediaId, { silent: true });
-                        if (fresh) {
-                            const proxy = maybeProxySrc(fresh) || fresh;
-                            el.dataset.src = proxy;
-                            el.src = proxy;
-                            try { el.load(); } catch { }
-                            return;
-                        }
-                    }
                     if (mediaId) {
-                        await removeMediaIfForbidden(mediaId, el.currentSrc || el.src);
+                        ensureEditorMediaCache(mediaId, 'video');
                     }
                 });
             } else if (isText) {
@@ -687,14 +1061,27 @@ function renderPreviewLayers(layers, t) {
         el.style.zIndex = String(1000 - layer.trackIndex);
         el.style.opacity = String(getTransitionOpacity(seg, t));
 
-        const src = seg.src ? (maybeProxySrc(seg.src) || seg.src) : '';
+        const src = isText ? '' : getEditorMediaPlaybackSrc(seg);
+        if (!isText && !src && seg.mediaId) {
+            ensureEditorMediaCache(seg.mediaId, seg.mediaType);
+        }
         if (!isText && src && el.dataset.src !== src) {
             el.dataset.src = src;
             el.src = src;
+            if (isVideo) {
+                try { el.load(); } catch { }
+            }
+        } else if (isVideo && !src && el.dataset.src) {
+            delete el.dataset.src;
+            el.removeAttribute('src');
+            try { el.load(); } catch { }
         }
 
         const media = seg.mediaId ? editorState.mediaItems.find(m => m.id === seg.mediaId) : null;
         if (isVideo) {
+            const shouldPlayAudio = editorState.playing && seg.id === audibleVideoSegId && !seg.muted;
+            el.muted = !shouldPlayAudio;
+            el.volume = shouldPlayAudio ? 1 : 0;
             if (el.videoWidth && el.videoHeight) {
                 seg._mediaW = el.videoWidth;
                 seg._mediaH = el.videoHeight;
@@ -723,8 +1110,9 @@ function renderPreviewLayers(layers, t) {
         }
 
         if (isVideo) {
-            const segTime = Math.max(0, t - seg.start);
-            if (!Number.isNaN(segTime) && Math.abs(el.currentTime - segTime) > 0.35) {
+            const segTime = Math.max(0, Math.min(seg.duration || Infinity, t - seg.start));
+            el.dataset.previewTime = String(segTime);
+            if (!Number.isNaN(segTime) && el.readyState >= 1 && Math.abs(el.currentTime - segTime) > 0.12) {
                 try { el.currentTime = segTime; } catch { }
             }
             if (editorState.playing) {
@@ -751,10 +1139,51 @@ function clearPreviewLayers() {
 function initPreviewTransformControls() {
     const stage = eq('preview-stage');
     if (!stage) return;
+    const updateHoverState = e => {
+        if (!stage) return;
+        if (editorState.previewDrag) return;
+        if (e?.target?.closest?.('.preview-scale-handle')) {
+            stage.classList.add('preview-over-media');
+            return;
+        }
+        const seg = getActivePreviewSegment();
+        if (!seg) {
+            stage.classList.remove('preview-over-media');
+            return;
+        }
+        const stageRect = stage.getBoundingClientRect();
+        const x = e.clientX;
+        const y = e.clientY;
+        let inside = false;
+        if (seg.mediaType === 'text') {
+            const el = document.querySelector(`.preview-layer[data-seg-id="${seg.id}"]`);
+            const rect = el?.getBoundingClientRect();
+            if (rect) {
+                inside = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+            }
+        } else {
+            const t = getSegmentTransform(seg);
+            const metrics = getPreviewContentMetrics(seg, stageRect, t.x, t.y, t.scale);
+            if (metrics) {
+                const left = stageRect.left + metrics.left;
+                const right = stageRect.left + metrics.right;
+                const top = stageRect.top + metrics.top;
+                const bottom = stageRect.top + metrics.bottom;
+                inside = x >= left && x <= right && y >= top && y <= bottom;
+            }
+        }
+        stage.classList.toggle('preview-over-media', inside);
+    };
+
     stage.addEventListener('pointerdown', e => {
+        if (editorState.previewDrag) {
+            editorState.previewDrag = null;
+            stage.classList.remove('dragging');
+        }
         const hit = document.elementsFromPoint(e.clientX, e.clientY)
             .find(el => el.classList?.contains('preview-layer'));
         const isHandle = !!e.target.closest('.text-resize-handle');
+        const isScaleHandle = !!e.target.closest('.preview-scale-handle');
         if (hit?.classList?.contains('preview-layer-text') && hit.dataset.editing === '1' && !isHandle) {
             return;
         }
@@ -772,13 +1201,22 @@ function initPreviewTransformControls() {
         const seg = getActivePreviewSegment();
         if (!seg || (seg.mediaType !== 'video' && seg.mediaType !== 'image' && seg.mediaType !== 'text')) return;
         if (e.button !== 0) return;
+        if (seg.mediaType === 'video' || seg.mediaType === 'image') {
+            const el = document.querySelector(`.preview-layer[data-seg-id="${seg.id}"]`);
+            const rect = el?.getBoundingClientRect();
+            if (rect) {
+                const inside = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
+                if (!inside && !isScaleHandle) return;
+            }
+        }
         e.preventDefault();
         const rect = stage.getBoundingClientRect();
         const t = getSegmentTransform(seg);
         const isTitleText = seg.mediaType === 'text' && seg.presetKey === 'title';
+        const allowShiftScale = seg.mediaType === 'text' || seg.mediaType === 'video' || seg.mediaType === 'image';
         editorState.previewDrag = {
             id: seg.id,
-            mode: isTitleText ? 'move' : (isHandle ? 'resize-text' : (e.shiftKey ? 'scale' : 'move')),
+            mode: isTitleText ? 'move' : (isHandle ? 'resize-text' : (isScaleHandle ? 'scale' : (allowShiftScale && e.shiftKey ? 'scale' : 'move'))),
             startX: e.clientX,
             startY: e.clientY,
             baseX: t.x,
@@ -790,6 +1228,7 @@ function initPreviewTransformControls() {
             moved: false,
             hitEl: isHandle ? null : (hit || null),
             wasEditing: hit?.dataset?.editing === '1',
+            pointerId: e.pointerId,
         };
         stage.setPointerCapture(e.pointerId);
         stage.classList.add('dragging');
@@ -922,7 +1361,63 @@ function initPreviewTransformControls() {
             if (previewGuideBottom) previewGuideBottom.classList.toggle('active', snapEdgeBottom);
         } else {
             const next = drag.baseScale * (1 - dy * 0.005);
-            const clamped = Math.max(0.2, Math.min(5, next));
+            let clamped = Math.max(0.2, Math.min(5, next));
+            let snapEdgeLeft = false;
+            let snapEdgeRight = false;
+            let snapEdgeTop = false;
+            let snapEdgeBottom = false;
+            const nx = drag.baseX;
+            const ny = drag.baseY;
+            let metrics = getPreviewContentMetrics(seg, drag.rect, nx, ny, clamped);
+            if (metrics) {
+                const candidates = [];
+                const leftDist = metrics.left;
+                const rightDist = drag.rect.width - metrics.right;
+                const topDist = metrics.top;
+                const bottomDist = drag.rect.height - metrics.bottom;
+                if (Math.abs(leftDist) <= edgeSnapPx && metrics.dw > 0) {
+                    const desiredDw = drag.rect.width * (1 + 2 * nx);
+                    if (desiredDw > 0) {
+                        candidates.push({ edge: 'left', scale: clamped * (desiredDw / metrics.dw) });
+                    }
+                }
+                if (Math.abs(rightDist) <= edgeSnapPx && metrics.dw > 0) {
+                    const desiredDw = drag.rect.width * (1 - 2 * nx);
+                    if (desiredDw > 0) {
+                        candidates.push({ edge: 'right', scale: clamped * (desiredDw / metrics.dw) });
+                    }
+                }
+                if (Math.abs(topDist) <= edgeSnapPx && metrics.dh > 0) {
+                    const desiredDh = drag.rect.height * (1 + 2 * ny);
+                    if (desiredDh > 0) {
+                        candidates.push({ edge: 'top', scale: clamped * (desiredDh / metrics.dh) });
+                    }
+                }
+                if (Math.abs(bottomDist) <= edgeSnapPx && metrics.dh > 0) {
+                    const desiredDh = drag.rect.height * (1 - 2 * ny);
+                    if (desiredDh > 0) {
+                        candidates.push({ edge: 'bottom', scale: clamped * (desiredDh / metrics.dh) });
+                    }
+                }
+                if (candidates.length) {
+                    let chosen = null;
+                    candidates.forEach(c => {
+                        const s = Math.max(0.2, Math.min(5, c.scale));
+                        const delta = Math.abs(s - clamped);
+                        if (!chosen || delta < chosen.delta) {
+                            chosen = { edge: c.edge, scale: s, delta };
+                        }
+                    });
+                    if (chosen) {
+                        clamped = chosen.scale;
+                        metrics = getPreviewContentMetrics(seg, drag.rect, nx, ny, clamped);
+                        snapEdgeLeft = chosen.edge === 'left';
+                        snapEdgeRight = chosen.edge === 'right';
+                        snapEdgeTop = chosen.edge === 'top';
+                        snapEdgeBottom = chosen.edge === 'bottom';
+                    }
+                }
+            }
             seg.transform = { ...seg.transform, scale: clamped };
             if (previewGuideV) previewGuideV.classList.remove('active');
             if (previewGuideH) previewGuideH.classList.remove('active');
@@ -930,12 +1425,13 @@ function initPreviewTransformControls() {
             if (previewGuideVQ3) previewGuideVQ3.classList.remove('active');
             if (previewGuideHQ1) previewGuideHQ1.classList.remove('active');
             if (previewGuideHQ3) previewGuideHQ3.classList.remove('active');
-            if (previewGuideLeft) previewGuideLeft.classList.remove('active');
-            if (previewGuideRight) previewGuideRight.classList.remove('active');
-            if (previewGuideTop) previewGuideTop.classList.remove('active');
-            if (previewGuideBottom) previewGuideBottom.classList.remove('active');
+            if (previewGuideLeft) previewGuideLeft.classList.toggle('active', snapEdgeLeft);
+            if (previewGuideRight) previewGuideRight.classList.toggle('active', snapEdgeRight);
+            if (previewGuideTop) previewGuideTop.classList.toggle('active', snapEdgeTop);
+            if (previewGuideBottom) previewGuideBottom.classList.toggle('active', snapEdgeBottom);
         }
         applyPreviewTransform(seg);
+        updatePreviewScaleHandle();
     });
 
     const endDrag = e => {
@@ -962,10 +1458,16 @@ function initPreviewTransformControls() {
             const content = el?.querySelector('.text-content');
             if (content) content.focus();
         }
-        try { stage.releasePointerCapture(e.pointerId); } catch { }
+        const pid = drag?.pointerId ?? e?.pointerId;
+        try { if (pid != null) stage.releasePointerCapture(pid); } catch { }
     };
     stage.addEventListener('pointerup', endDrag);
     stage.addEventListener('pointercancel', endDrag);
+    window.addEventListener('pointerup', endDrag, true);
+    window.addEventListener('blur', endDrag);
+
+    stage.addEventListener('pointermove', updateHoverState);
+    stage.addEventListener('pointerleave', () => stage.classList.remove('preview-over-media'));
 
     window.addEventListener('resize', () => {
         applyPreviewRatio();
@@ -1023,38 +1525,201 @@ function syncMediaLibrary() {
     const generated = (window.state?.jobs || [])
         .filter(j => j.status === 'succeeded' && j.videoUrl);
     generated.forEach(job => {
+        const cachedSrc = getCachedEditorVideoSrc(job.id);
         const existing = editorState.mediaItems.find(m => m.id === job.id);
         if (existing) {
-            if (existing.src !== job.videoUrl) existing.src = job.videoUrl;
-            existing.proxySrc = maybeProxySrc(job.videoUrl);
+            if (cachedSrc && existing.src !== cachedSrc) existing.src = cachedSrc;
+            existing.proxySrc = cachedSrc || '';
             if (job.thumbDataUrl) existing.thumbDataUrl = job.thumbDataUrl;
             existing.thumbDisabled = !!job.thumbDisabled;
             editorState.tracks.forEach(t => {
                 t.segments.forEach(s => {
-                    if (s.mediaId === job.id && s.src !== job.videoUrl) s.src = job.videoUrl;
+                    if (cachedSrc && s.mediaId === job.id && s.src !== cachedSrc) s.src = cachedSrc;
                 });
             });
+            if (!cachedSrc) ensureEditorVideoCache(job.id);
             return;
         }
         editorState.mediaItems.push({
             id: job.id,
             name: (job.prompt || 'Generated Video').slice(0, 30),
-            src: job.videoUrl,
-            proxySrc: maybeProxySrc(job.videoUrl),
+            src: cachedSrc || '',
+            proxySrc: cachedSrc || '',
             thumbDataUrl: job.thumbDataUrl || null,
             thumbDisabled: !!job.thumbDisabled,
             type: 'video',
             duration: job.duration || 5,
             source: 'generated',
         });
+        if (!cachedSrc) ensureEditorVideoCache(job.id);
     });
     editorState.mediaItems.forEach(ensureMediaDimensions);
     renderMediaList();
+    syncGeneratedMediaFromDB();
 }
 window.syncMediaLibrary = syncMediaLibrary;
 
+let generatedMediaSyncPromise = null;
+async function syncGeneratedMediaFromDB() {
+    if (!window.dbGetAll || !window.db) return;
+    if (generatedMediaSyncPromise) return generatedMediaSyncPromise;
+    generatedMediaSyncPromise = (async () => {
+        try {
+            if (typeof ensureDBReady === 'function') await ensureDBReady();
+        } catch {
+        }
+        let changed = false;
+        try {
+            const [images, audio] = await Promise.all([
+                window.dbGetAll('images').catch(() => []),
+                window.dbGetAll('audio').catch(() => []),
+            ]);
+            images.forEach(record => {
+                if (!record || !record.id) return;
+                if (editorState.mediaItems.some(m => m.id === record.id)) return;
+                const src = record.blob ? URL.createObjectURL(record.blob) : (isEditorCachedSrc(record.blobUrl) ? record.blobUrl : '');
+                if (!src) {
+                    ensureEditorMediaCache(record.id, 'image');
+                    return;
+                }
+                editorState.mediaItems.push({
+                    id: record.id,
+                    name: (record.prompt || 'Generated Image').slice(0, 30),
+                    src,
+                    type: 'image',
+                    duration: record.duration || 2,
+                    source: 'generated',
+                });
+                changed = true;
+            });
+            audio.forEach(record => {
+                if (!record || !record.id) return;
+                if (editorState.mediaItems.some(m => m.id === record.id)) return;
+                const src = record.blob ? URL.createObjectURL(record.blob) : (isEditorCachedSrc(record.blobUrl) ? record.blobUrl : '');
+                if (!src) {
+                    ensureEditorMediaCache(record.id, 'audio');
+                    return;
+                }
+                editorState.mediaItems.push({
+                    id: record.id,
+                    name: (record.prompt || 'Generated Audio').slice(0, 30),
+                    src,
+                    thumbDataUrl: record.thumbDataUrl || null,
+                    type: 'audio',
+                    duration: record.duration || 10,
+                    source: 'generated',
+                });
+                changed = true;
+            });
+        } catch {
+        }
+        if (changed) renderMediaList();
+    })();
+    await generatedMediaSyncPromise;
+    generatedMediaSyncPromise = null;
+}
+
+window.addGeneratedImageToEditor = function addGeneratedImageToEditor(record) {
+    if (!record || !record.id) return;
+    if (editorState.mediaItems.some(m => m.id === record.id)) return;
+    const src = record.blob ? URL.createObjectURL(record.blob) : (isEditorCachedSrc(record.blobUrl) ? record.blobUrl : '');
+    if (!src) {
+        if (window.ensureImageCached) {
+            window.ensureImageCached(record.id, { silent: true }).then(cachedSrc => {
+                if (!cachedSrc || editorState.mediaItems.some(m => m.id === record.id)) return;
+                editorState.mediaItems.push({
+                    id: record.id,
+                    name: (record.prompt || 'Generated Image').slice(0, 30),
+                    src: cachedSrc,
+                    type: 'image',
+                    duration: record.duration || 2,
+                    source: 'generated',
+                });
+                renderMediaList();
+            }).catch(() => {});
+        }
+        return;
+    }
+    editorState.mediaItems.push({
+        id: record.id,
+        name: (record.prompt || 'Generated Image').slice(0, 30),
+        src,
+        type: 'image',
+        duration: record.duration || 2,
+        source: 'generated',
+    });
+    renderMediaList();
+};
+
+window.addGeneratedAudioToEditor = function addGeneratedAudioToEditor(record) {
+    if (!record || !record.id) return;
+    if (editorState.mediaItems.some(m => m.id === record.id)) return;
+    const src = record.blob ? URL.createObjectURL(record.blob) : (isEditorCachedSrc(record.blobUrl) ? record.blobUrl : '');
+    if (!src) {
+        if (window.ensureAudioCached) {
+            window.ensureAudioCached(record.id, { silent: true }).then(cachedSrc => {
+                if (!cachedSrc || editorState.mediaItems.some(m => m.id === record.id)) return;
+                editorState.mediaItems.push({
+                    id: record.id,
+                    name: (record.prompt || 'Generated Audio').slice(0, 30),
+                    src: cachedSrc,
+                    thumbDataUrl: record.thumbDataUrl || null,
+                    type: 'audio',
+                    duration: record.duration || 10,
+                    source: 'generated',
+                });
+                renderMediaList();
+            }).catch(() => {});
+        }
+        return;
+    }
+    editorState.mediaItems.push({
+        id: record.id,
+        name: (record.prompt || 'Generated Audio').slice(0, 30),
+        src,
+        thumbDataUrl: record.thumbDataUrl || null,
+        type: 'audio',
+        duration: record.duration || 10,
+        source: 'generated',
+    });
+    renderMediaList();
+};
+
+window.removeMediaItemById = function removeMediaItemById(id) {
+    if (!id) return;
+    const before = editorState.mediaItems.length;
+    editorState.mediaItems = editorState.mediaItems.filter(m => m.id !== id);
+    if (editorState.mediaItems.length === before) return;
+    editorState.tracks.forEach(t => {
+        t.segments = t.segments.filter(s => s.mediaId !== id);
+    });
+    renderMediaList();
+    renderTimeline();
+};
+
+function initGeneratedMediaTabs() {
+    const tabs = document.querySelectorAll('.media-section-tab[data-media-tab]');
+    if (!tabs.length) return;
+    tabs.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tab = btn.dataset.mediaTab;
+            setGeneratedMediaTab(tab);
+        });
+    });
+    setGeneratedMediaTab(editorState.generatedMediaTab || 'video', { silent: true });
+}
+
+function setGeneratedMediaTab(tab, { silent = false } = {}) {
+    editorState.generatedMediaTab = tab;
+    const tabs = document.querySelectorAll('.media-section-tab[data-media-tab]');
+    tabs.forEach(btn => btn.classList.toggle('active', btn.dataset.mediaTab === tab));
+    if (!silent) renderMediaList();
+}
+
 function renderMediaList() {
-    const genEl = eq('media-generated');
+    const genVideoEl = eq('media-generated-video');
+    const genImageEl = eq('media-generated-image');
+    const genAudioEl = eq('media-generated-audio');
     const upEl = eq('media-uploads');
     const genInfo = eq('media-gen-info');
     const genPrev = eq('media-gen-prev');
@@ -1069,15 +1734,20 @@ function renderMediaList() {
     });
     const uploads = editorState.mediaItems.filter(m => m.source === 'upload');
     const generated = editorState.mediaItems.filter(m => m.source === 'generated');
+    const generatedVideos = generated.filter(m => m.type === 'video');
+    const generatedImages = generated.filter(m => m.type === 'image');
+    const generatedAudio = generated.filter(m => m.type === 'audio');
 
     editorState.mediaItems.forEach(ensureMediaDimensions);
     renderTextItems();
     renderEffectItems();
 
-    eq('media-gen-count').textContent = generated.length;
+    const activeTab = editorState.generatedMediaTab || 'video';
+    const activeList = activeTab === 'image' ? generatedImages : activeTab === 'audio' ? generatedAudio : generatedVideos;
+    eq('media-gen-count').textContent = activeList.length;
     eq('media-up-count').textContent = uploads.length;
 
-    const visibleGenerated = generated;
+    const visibleGenerated = activeList;
     const totalGenerated = visibleGenerated.length;
     const perPage = Math.max(4, editorState.generatedPerPage || 12);
     const totalPages = Math.max(1, Math.ceil(totalGenerated / perPage));
@@ -1090,9 +1760,19 @@ function renderMediaList() {
     if (genPrev) genPrev.disabled = editorState.generatedPage <= 1;
     if (genNext) genNext.disabled = editorState.generatedPage >= totalPages;
 
-    genEl.innerHTML = totalGenerated === 0
-        ? '<div class="media-empty-hint">Generate videos in the Generate tab to see them here</div>'
+    if (genVideoEl) genVideoEl.classList.toggle('hidden', activeTab !== 'video');
+    if (genImageEl) genImageEl.classList.toggle('hidden', activeTab !== 'image');
+    if (genAudioEl) genAudioEl.classList.toggle('hidden', activeTab !== 'audio');
+
+    const emptyVideo = '<div class="media-empty-hint">Generate videos in the Generate tab to see them here</div>';
+    const emptyImage = '<div class="media-empty-hint">Generate images in the Images tab to see them here</div>';
+    const emptyAudio = '<div class="media-empty-hint">Generate audio in the Audio tab to see them here</div>';
+    const html = totalGenerated === 0
+        ? (activeTab === 'image' ? emptyImage : activeTab === 'audio' ? emptyAudio : emptyVideo)
         : pagedGenerated.map(m => mediaItemHTML(m, { compact: true })).join('');
+    if (activeTab === 'image' && genImageEl) genImageEl.innerHTML = html;
+    if (activeTab === 'audio' && genAudioEl) genAudioEl.innerHTML = html;
+    if (activeTab === 'video' && genVideoEl) genVideoEl.innerHTML = html;
 
     upEl.innerHTML = uploads.length === 0
         ? '<div class="media-empty-hint">Upload video or audio files above</div>'
@@ -1112,27 +1792,9 @@ function renderMediaList() {
     document.querySelectorAll('.media-thumb video').forEach(v => {
         if (v.dataset.bound === '1') return;
         v.dataset.bound = '1';
-        v.addEventListener('error', async () => {
+        v.addEventListener('error', () => {
             const mediaId = v.closest('.media-item')?.dataset?.mid;
-            if (mediaId && window.refreshJobVideoUrl) {
-                const fresh = await window.refreshJobVideoUrl(mediaId, { silent: true });
-                if (fresh) {
-                    const proxy = maybeProxySrc(fresh);
-                    v.dataset.proxy = proxy || '';
-                    v.src = `${proxy || fresh}#t=0.1`;
-                    try { v.load(); } catch { }
-                    return;
-                }
-            }
-            const proxy = v.dataset.proxy;
-            if (proxy && v.src !== proxy) {
-                v.src = proxy;
-                try { v.load(); } catch { }
-                return;
-            }
-            if (mediaId) {
-                await removeMediaIfForbidden(mediaId, v.currentSrc || v.src);
-            }
+            if (mediaId) ensureEditorMediaCache(mediaId, 'video');
         });
     });
 
@@ -1193,25 +1855,31 @@ function mediaItemHTML(m, { compact = false } = {}) {
     }
 
     let thumbInner = `<div class="media-thumb-icon">${m.type === 'video' ? videoIcon : m.type === 'audio' ? audioIcon : m.type === 'effect' ? effectIcon : textIcon}</div>`;
-    if (m.src) {
+    const localSrc = getEditorMediaPlaybackSrc(m);
+    if (localSrc) {
         if (m.type === 'video') {
             if (compact && m.thumbDataUrl) {
                 const safeThumb = escH(m.thumbDataUrl);
                 thumbInner = `<img src="${safeThumb}" alt="${escH(m.name)}" />`;
             } else if (!compact) {
-                const proxy = m.proxySrc || maybeProxySrc(m.src) || '';
-                const isRemote = /^https?:/i.test(m.src);
-                if (!proxy && isRemote) {
-                    thumbInner = `<div class="media-thumb-icon">${videoIcon}</div>`;
-                } else {
-                    const proxyAttr = proxy ? ` data-proxy="${escH(proxy)}"` : '';
-                    const safeSrc = escH(proxy || m.src);
-                    thumbInner = `<video src="${safeSrc}#t=0.1" preload="metadata" muted playsinline${proxyAttr}></video>`;
-                }
+                const safeSrc = escH(localSrc);
+                thumbInner = `<video src="${safeSrc}#t=0.1" preload="metadata" muted playsinline></video>`;
             }
         } else if (m.type === 'image') {
-            const safeSrc = escH(m.src);
+            const safeSrc = escH(localSrc);
             thumbInner = `<img src="${safeSrc}" alt="${escH(m.name)}" />`;
+        } else if (m.type === 'audio' && compact) {
+            const [accentA, accentB] = getAudioThumbPalette(m.id || m.name || 'audio');
+            const thumbStyle = m.thumbDataUrl
+                ? `background-image: linear-gradient(180deg, rgba(7, 10, 18, 0.08), rgba(7, 10, 18, 0.3)), url('${escH(m.thumbDataUrl)}'); background-size: cover; background-position: center;`
+                : '';
+            const equalizerBars = Array.from({ length: 18 }, (_, idx) =>
+                `<span class="media-thumb-audio-bar b${(idx % 5) + 1}"></span>`).join('');
+            thumbInner = `
+                <div class="media-thumb-audio-cover" style="--audio-accent-a:${accentA}; --audio-accent-b:${accentB}; ${thumbStyle}">
+                    <div class="media-thumb-audio-eq" aria-hidden="true">${equalizerBars}</div>
+                    <div class="media-thumb-audio-name">${escH(m.name || 'Generated Audio')}</div>
+                </div>`;
         }
     }
     return `
@@ -1221,14 +1889,79 @@ function mediaItemHTML(m, { compact = false } = {}) {
     </div>`;
 }
 
-function previewMediaItem(id) {
+function getAudioThumbPalette(seedValue) {
+    const text = String(seedValue || 'audio');
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+        hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    }
+    const baseHue = Math.abs(hash) % 360;
+    const nextHue = (baseHue + 42 + (Math.abs(hash) % 37)) % 360;
+    return [
+        `hsl(${baseHue} 68% 52%)`,
+        `hsl(${nextHue} 72% 44%)`,
+    ];
+}
+
+function setCompactAudioPlaybackState(activeId) {
+    document.querySelectorAll('.media-item.compact[data-mid]').forEach(el => {
+        el.classList.toggle('is-playing', !!activeId && el.dataset.mid === activeId);
+    });
+}
+
+async function previewMediaItem(id) {
     const item = editorState.mediaItems.find(m => m.id === id);
     if (!item) return;
 
     // Stop all other playing thumbnails
     document.querySelectorAll('.media-thumb video').forEach(v => v.pause());
+    if (!previewMediaItem._audioMap) previewMediaItem._audioMap = new Map();
+    const existingAudio = previewMediaItem._audioMap.get(item.id);
+    const wasPlaying = item.type === 'audio'
+        && existingAudio
+        && !existingAudio.paused
+        && !existingAudio.ended;
+    previewMediaItem._audioMap.forEach(a => { try { a.pause(); } catch { } });
+    previewMediaItem._activeAudioId = null;
+    setCompactAudioPlaybackState(null);
+
+    if (item.type === 'audio') {
+        let audioSrc = getEditorMediaPlaybackSrc(item);
+        if (!audioSrc && item.id) {
+            ensureEditorMediaCache(item.id, 'audio');
+            return;
+        }
+        let aud = previewMediaItem._audioMap.get(item.id);
+        if (!aud) {
+            aud = new Audio(audioSrc);
+            aud.preload = 'metadata';
+            aud.addEventListener('ended', () => {
+                if (previewMediaItem._activeAudioId === item.id) {
+                    previewMediaItem._activeAudioId = null;
+                    setCompactAudioPlaybackState(null);
+                }
+            });
+            previewMediaItem._audioMap.set(item.id, aud);
+        } else if (aud.src !== audioSrc) {
+            aud.src = audioSrc;
+        }
+        if (wasPlaying) {
+            aud.currentTime = 0;
+            return;
+        }
+        aud.currentTime = 0;
+        aud.play().then(() => {
+            previewMediaItem._activeAudioId = item.id;
+            setCompactAudioPlaybackState(item.id);
+        }).catch(() => {});
+        return;
+    }
 
     if (item.type !== 'video') return;
+    if (!getEditorMediaPlaybackSrc(item) && item.id) {
+        ensureEditorMediaCache(item.id, 'video');
+        return;
+    }
 
     // Play/Pause the clicked thumbnail
     const el = document.querySelector(`.media-item[data-mid="${id}"] .media-thumb video`);
@@ -1398,10 +2131,10 @@ function canUseProjectServer() {
     return typeof location !== 'undefined' && location.protocol !== 'file:';
 }
 
-async function saveProjectToServer(project) {
+async function saveProjectToServer(project, preferredName = null) {
     if (!canUseProjectServer()) return null;
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const name = `vibedstudio-${stamp}.svs`;
+    const name = preferredName || `vibedstudio-${stamp}.svs`;
     try {
         const resp = await fetch('/api/project/save', {
             method: 'POST',
@@ -1464,7 +2197,6 @@ async function collectVideoHistory(maxBlobSize) {
                 lastFrameDataUrl: r.lastFrameDataUrl || null,
                 referenceImages: Array.isArray(r.referenceImages) ? r.referenceImages : [],
                 generateAudio: !!r.generateAudio,
-                watermark: !!r.watermark,
                 prompt: r.prompt || '',
                 model: r.model || null,
                 ratio: r.ratio || null,
@@ -1563,11 +2295,67 @@ async function clearImageHistoryStore() {
     }
 }
 
-async function saveProject() {
+async function collectAudioHistory(maxBlobSize) {
+    if (!window.dbGetAll || !window.db) return [];
+    try {
+        const records = await window.dbGetAll('audio');
+        if (!records || !records.length) return [];
+        const items = [];
+        for (const r of records) {
+            const entry = {
+                id: r.id,
+                url: r.url || null,
+                prompt: r.prompt || '',
+                lyrics: r.lyrics || '',
+                tags: Array.isArray(r.tags) ? r.tags : [],
+                model: r.model || null,
+                format: r.format || null,
+                bitrate: r.bitrate || null,
+                duration: r.duration || null,
+                timestamp: r.timestamp instanceof Date ? r.timestamp.toISOString() : r.timestamp || null,
+            };
+            if (r.blob instanceof Blob) {
+                if (!maxBlobSize || r.blob.size <= maxBlobSize) {
+                    try {
+                        entry.blobBase64 = await blobToDataUrl(r.blob);
+                    } catch {
+                        entry.blobSkipped = true;
+                    }
+                } else {
+                    entry.blobSkipped = true;
+                    entry.blobSize = r.blob.size;
+                }
+            }
+            items.push(entry);
+        }
+        return items;
+    } catch {
+        return [];
+    }
+}
+
+async function clearAudioHistoryStore() {
+    if (!window.db) return;
+    try {
+        const tx = window.db.transaction('audio', 'readwrite');
+        tx.objectStore('audio').clear();
+        await new Promise((resolve, reject) => {
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+    } catch {
+    }
+}
+
+async function saveProject({ autosave = false, silent = false } = {}) {
+    if (autosave && (!canAutosaveProject() || editorState.projectAutosaveBusy)) return false;
+    if (autosave) editorState.projectAutosaveBusy = true;
     const maxInlineSize = 12 * 1024 * 1024; // 12MB per asset
     const maxCachedVideoSize = 80 * 1024 * 1024; // 80MB for cached videos
     const maxHistoryVideoSize = 80 * 1024 * 1024; // 80MB per history video
     const maxHistoryImageSize = 25 * 1024 * 1024; // 25MB per history image
+    const maxHistoryAudioSize = 25 * 1024 * 1024; // 25MB per history audio
     let cachedVideoMap = new Map();
     if (window.dbGetAll && window.db) {
         try {
@@ -1639,6 +2427,8 @@ async function saveProject() {
         version: 1,
         savedAt: new Date().toISOString(),
         apiKey: (window.state?.apiKey || localStorage.getItem('vibedstudio_api_key') || ''),
+        openaiApiKey: (window.state?.openaiApiKey || localStorage.getItem('vibedstudio_openai_api_key') || ''),
+        sonautoApiKey: (window.state?.sonautoApiKey || localStorage.getItem('vibedstudio_sonauto_api_key') || ''),
         timelineDur: editorState.timelineDur,
         pxPerSec: editorState.pxPerSec,
         tracks: editorState.tracks.map(t => ({
@@ -1683,6 +2473,8 @@ async function saveProject() {
     if (history.length) project.videoHistory = history;
     const imageHistory = await collectImageHistory(maxHistoryImageSize);
     if (imageHistory.length) project.imageHistory = imageHistory;
+    const audioHistory = await collectAudioHistory(maxHistoryAudioSize);
+    if (audioHistory.length) project.audioHistory = audioHistory;
 
     if (window.state) {
         const textPromptEl = document.getElementById('text-prompt');
@@ -1692,6 +2484,17 @@ async function saveProject() {
         const imgModel = document.querySelector('#img-model-grid .model-card.selected')?.dataset?.model || null;
         const imgSize = document.querySelector('.img-size-btn.selected')?.dataset?.size || null;
         const imgFormat = document.querySelector('.img-format-btn.selected')?.dataset?.format || null;
+        const imageState = typeof window.getImageGeneratorState === 'function'
+            ? window.getImageGeneratorState()
+            : {
+                model: imgModel,
+                size: imgSize,
+                format: imgFormat,
+                promptText: imgPromptEl?.value || '',
+            };
+        const audioState = typeof window.getAudioGeneratorState === 'function'
+            ? window.getAudioGeneratorState()
+            : null;
         project.generatorState = {
             video: {
                 model: window.state.model,
@@ -1701,7 +2504,6 @@ async function saveProject() {
                 returnLastFrame: window.state.returnLastFrame,
                 serviceTier: window.state.serviceTier,
                 generateAudio: window.state.generateAudio,
-                watermark: window.state.watermark,
                 cameraFixed: window.state.cameraFixed,
                 seed: window.state.seed,
                 draft: window.state.draft,
@@ -1714,52 +2516,85 @@ async function saveProject() {
                 imagePromptText: imagePromptEl?.value || '',
                 referencePromptText: refPrompt || '',
             },
-            image: {
-                model: imgModel,
-                size: imgSize,
-                format: imgFormat,
-                promptText: imgPromptEl?.value || '',
-            },
+            image: imageState,
+            audio: audioState,
         };
     }
 
     const blob = await encodeProjectBlob(project);
     const defaultName = `vibedstudio-project-${new Date().toISOString().replace(/[:.]/g, '-')}.svs`;
 
-    if (typeof window.showSaveFilePicker === 'function') {
-        try {
-            const handle = await window.showSaveFilePicker({
-                suggestedName: defaultName,
-                types: [{
-                    description: 'VibedStudio Project',
-                    accept: { 'application/octet-stream': ['.svs'] },
-                }],
-            });
-            const writable = await handle.createWritable();
-            await writable.write(blob);
-            await writable.close();
-            showToast('Project saved', 'success', '💾');
-            return;
-        } catch (err) {
-            if (err && err.name === 'AbortError') return;
+    const saveToFileHandle = async handle => {
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+    };
+
+    try {
+        if (editorState.projectSaveTarget?.kind === 'file' && editorState.projectSaveTarget.handle) {
+            await saveToFileHandle(editorState.projectSaveTarget.handle);
+            if (!silent) showToast(autosave ? 'Project autosaved' : 'Project saved', 'success', '💾');
+            return true;
         }
-    }
 
-    const serverRes = await saveProjectToServer(project);
-    if (serverRes?.ok) {
-        showToast(`Project saved: ${serverRes.name}`, 'success', '💾');
-        return;
-    }
+        if (editorState.projectSaveTarget?.kind === 'server' && editorState.projectSaveTarget.name) {
+            const serverRes = await saveProjectToServer(project, editorState.projectSaveTarget.name);
+            if (serverRes?.ok) {
+                setProjectSaveTarget({ kind: 'server', name: serverRes.name || editorState.projectSaveTarget.name });
+                if (!silent) showToast(autosave ? `Project autosaved: ${serverRes.name}` : `Project saved: ${serverRes.name}`, 'success', '💾');
+                return true;
+            }
+            if (autosave) {
+                if (!silent) showToast('Project autosave failed', 'error', '❌');
+                return false;
+            }
+        }
 
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = defaultName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    showToast('Project saved (downloaded .svs)', 'success', '💾');
+        if (typeof window.showSaveFilePicker === 'function' && !autosave) {
+            try {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: defaultName,
+                    types: [{
+                        description: 'VibedStudio Project',
+                        accept: { 'application/octet-stream': ['.svs'] },
+                    }],
+                });
+                await saveToFileHandle(handle);
+                setProjectSaveTarget({ kind: 'file', handle, name: handle.name || defaultName });
+                if (!silent) showToast('Project saved', 'success', '💾');
+                return true;
+            } catch (err) {
+                if (err && err.name === 'AbortError') return false;
+            }
+        }
+
+        const serverRes = await saveProjectToServer(project);
+        if (serverRes?.ok) {
+            setProjectSaveTarget({ kind: 'server', name: serverRes.name });
+            if (!silent) showToast(`${autosave ? 'Project autosaved' : 'Project saved'}: ${serverRes.name}`, 'success', '💾');
+            return true;
+        }
+
+        if (autosave) {
+            if (!silent) showToast('Project autosave unavailable for download-only saves', 'error', '❌');
+            return false;
+        }
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = defaultName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        setProjectSaveTarget(null);
+        if (!silent) showToast('Project saved (downloaded .svs)', 'success', '💾');
+        return true;
+    } finally {
+        if (autosave) editorState.projectAutosaveBusy = false;
+        updateProjectAutosaveUI();
+    }
 }
 
 async function applyProjectData(data) {
@@ -1780,6 +2615,26 @@ async function applyProjectData(data) {
         if (typeof window.updateHakDot === 'function') {
             window.updateHakDot();
         }
+    }
+    if (data.openaiApiKey !== undefined) {
+        const openaiKey = String(data.openaiApiKey || '').trim();
+        const openaiInput = eq('openai-api-key');
+        if (openaiInput) {
+            openaiInput.value = openaiKey;
+            openaiInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        localStorage.setItem('vibedstudio_openai_api_key', openaiKey);
+        if (window.state) window.state.openaiApiKey = openaiKey;
+    }
+    if (data.sonautoApiKey !== undefined) {
+        const sonautoKey = String(data.sonautoApiKey || '').trim();
+        const sonautoInput = eq('sonauto-api-key');
+        if (sonautoInput) {
+            sonautoInput.value = sonautoKey;
+            sonautoInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        localStorage.setItem('vibedstudio_sonauto_api_key', sonautoKey);
+        if (window.state) window.state.sonautoApiKey = sonautoKey;
     }
 
     // Rebuild media items
@@ -1883,7 +2738,7 @@ async function applyProjectData(data) {
     editorState.transitions = Array.isArray(data.transitions) ? data.transitions : [];
 
     const maxEnd = editorState.tracks.flatMap(t => t.segments).reduce((m, s) => Math.max(m, (s.start || 0) + (s.duration || 0)), 0);
-    const baseDur = Math.max(TIMELINE_MIN_SECONDS, maxEnd + 2);
+    const baseDur = Math.max(TIMELINE_MIN_SECONDS, maxEnd + TIMELINE_TAIL_SECONDS);
     editorState.timelineDur = Math.max(data.timelineDur || 0, baseDur);
     editorState.pxPerSec = data.pxPerSec || editorState.pxPerSec;
     editorState.currentTime = 0;
@@ -1891,6 +2746,8 @@ async function applyProjectData(data) {
     renderMediaList();
     renderTimeline();
     seekTo(0);
+    editorState.timelineUndo = [];
+    editorState.timelineRedo = [];
 
     if (Array.isArray(data.videoHistory) && data.videoHistory.length) {
         try {
@@ -1927,7 +2784,6 @@ async function applyProjectData(data) {
                     lastFrameDataUrl: v.lastFrameDataUrl || null,
                     referenceImages: Array.isArray(v.referenceImages) ? v.referenceImages : [],
                     generateAudio: !!v.generateAudio,
-                    watermark: !!v.watermark,
                     tokensUsed: v.tokensUsed ?? null,
                     tokensEstimate: v.tokensEstimate ?? null,
                     lastFrameUrl: v.lastFrameUrl || null,
@@ -1983,6 +2839,44 @@ async function applyProjectData(data) {
         }
     }
 
+    if (Array.isArray(data.audioHistory) && data.audioHistory.length) {
+        try {
+            if (typeof ensureDBReady === 'function') {
+                await ensureDBReady();
+            }
+            await clearAudioHistoryStore();
+            const restored = [];
+            for (const aud of data.audioHistory) {
+                let blob = null;
+                if (aud.blobBase64) {
+                    try { blob = dataUrlToBlob(aud.blobBase64); } catch { blob = null; }
+                }
+                const record = {
+                    id: aud.id || `import-audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                    url: aud.url || null,
+                    prompt: aud.prompt || '',
+                    lyrics: aud.lyrics || '',
+                    tags: Array.isArray(aud.tags) ? aud.tags : [],
+                    model: aud.model || null,
+                    format: aud.format || null,
+                    bitrate: aud.bitrate || null,
+                    duration: aud.duration || null,
+                    timestamp: aud.timestamp || new Date().toISOString(),
+                    blob,
+                };
+                restored.push(record);
+                if (window.dbPut && window.db) await window.dbPut('audio', record).catch(() => {});
+            }
+            if (typeof window.applyAudioHistory === 'function') {
+                window.applyAudioHistory(restored);
+            } else if (window.initAudio) {
+                window.initAudio();
+            }
+        } catch (e) {
+            console.warn('Audio history restore failed:', e);
+        }
+    }
+
     if (data.generatorState && typeof window.applyJobToForm === 'function') {
         const v = data.generatorState.video || {};
         const job = {
@@ -2013,6 +2907,9 @@ async function applyProjectData(data) {
         }
         if (data.generatorState.image && typeof window.applyImageGeneratorState === 'function') {
             window.applyImageGeneratorState(data.generatorState.image);
+        }
+        if (data.generatorState.audio && typeof window.applyAudioGeneratorState === 'function') {
+            window.applyAudioGeneratorState(data.generatorState.audio);
         }
     }
 }
@@ -2079,15 +2976,24 @@ function renderTimeline() {
 }
 
 function updateTimelineDur() {
-    const videoSegs = editorState.tracks
-        .flatMap(t => t.segments)
-        .filter(s => s.mediaType === 'video' || s.mediaType === 'image' || s.mediaType === 'text' || s.mediaType === 'effect');
-    const maxEnd = videoSegs.reduce((m, s) => Math.max(m, (s.start || 0) + (s.duration || 0)), 0);
-    const next = maxEnd > 0 ? Math.max(TIMELINE_MIN_SECONDS, maxEnd) : TIMELINE_MIN_SECONDS;
+    const maxEnd = getTimelineContentEnd([
+        'video',
+        'image',
+        'text',
+        'effect',
+    ]);
+    const next = maxEnd > 0 ? Math.max(TIMELINE_MIN_SECONDS, maxEnd + TIMELINE_TAIL_SECONDS) : TIMELINE_MIN_SECONDS;
     if (Math.abs(next - editorState.timelineDur) > 0.01) {
         editorState.timelineDur = next;
         if (editorState.currentTime > next) editorState.currentTime = next;
     }
+}
+
+function getTimelineContentEnd(mediaTypes = null) {
+    return editorState.tracks
+        .flatMap(t => t.segments)
+        .filter(s => !mediaTypes || mediaTypes.includes(s.mediaType))
+        .reduce((maxEnd, seg) => Math.max(maxEnd, (seg.start || 0) + (seg.duration || 0)), 0);
 }
 
 function renderLabels() {
@@ -2816,6 +3722,7 @@ function cloneSegmentData(seg) {
         letterSpacing: seg.letterSpacing ?? null,
         underline: !!seg.underline,
         effectKey: seg.effectKey || null,
+        presetKey: seg.presetKey || null,
         boxW: seg.boxW ?? null,
         boxH: seg.boxH ?? null,
     };
@@ -2869,6 +3776,7 @@ function pasteClipboardSegment() {
         return false;
     }
 
+    pushTimelineHistory();
     const seg = {
         ...data,
         id: 'seg-' + Date.now() + '-' + Math.random().toString(16).slice(2, 6),
@@ -3095,6 +4003,12 @@ function createSegmentEl(seg, track) {
     el.dataset.segId = seg.id;
     el.style.left = (seg.start * editorState.pxPerSec) + 'px';
     el.style.width = (seg.duration * editorState.pxPerSec) + 'px';
+    if (isAudio) {
+        const media = seg.mediaId ? editorState.mediaItems.find(m => m.id === seg.mediaId) : null;
+        const [accentA, accentB] = getAudioThumbPalette(media?.id || media?.name || seg.mediaId || seg.name || seg.id || 'audio');
+        el.style.background = `linear-gradient(135deg, ${accentA}cc, ${accentB}b3)`;
+        el.style.border = `1px solid ${accentA}`;
+    }
 
     const muteIcon = seg.muted
         ? `<svg viewBox="0 0 24 24" fill="none"><path d="M11 5L6 9H2V15H6L11 19V5Z" fill="currentColor" opacity="0.5"/><path d="M23 9L17 15M17 9L23 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`
@@ -3165,6 +4079,8 @@ function createSegmentEl(seg, track) {
 
         const origRect = el.getBoundingClientRect();
         const origTrackId = track.id;
+        const origStart = seg.start;
+        const historySnapshot = snapshotTimelineState();
         const grabOffset = e.clientX - origRect.left;
 
         // Floating ghost that follows the cursor
@@ -3263,6 +4179,8 @@ function createSegmentEl(seg, track) {
                 renderTimeline();
                 return;
             }
+            const changed = targetTrackId !== origTrackId || Math.abs(resolved - origStart) > 1e-6;
+            if (changed) pushTimelineHistory(historySnapshot);
             seg.start = resolved;
 
             if (targetTrackId !== origTrackId) {
@@ -3280,6 +4198,7 @@ function createSegmentEl(seg, track) {
     // Mute toggle
     el.querySelector('.tl-seg-mute-btn').addEventListener('click', e => {
         e.stopPropagation();
+        pushTimelineHistory();
         seg.muted = !seg.muted;
         renderTracks();
     });
@@ -3311,6 +4230,7 @@ function createSegmentEl(seg, track) {
         e.preventDefault(); e.stopPropagation();
         trimL.setPointerCapture(e.pointerId);
         const sx = e.clientX, os = seg.start, od = seg.duration;
+        const historySnapshot = snapshotTimelineState();
         function onMove(mv) {
             const dx = (mv.clientX - sx) / editorState.pxPerSec;
             let newStart = Math.max(0, Math.min(os + od - 0.25, os + dx));
@@ -3323,6 +4243,9 @@ function createSegmentEl(seg, track) {
         trimL.addEventListener('pointermove', onMove);
         trimL.addEventListener('pointerup', () => {
             trimL.removeEventListener('pointermove', onMove);
+            if (Math.abs(seg.start - os) > 1e-6 || Math.abs(seg.duration - od) > 1e-6) {
+                pushTimelineHistory(historySnapshot);
+            }
             renderTimeline();
         }, { once: true });
     });
@@ -3333,6 +4256,7 @@ function createSegmentEl(seg, track) {
         e.preventDefault(); e.stopPropagation();
         trimR.setPointerCapture(e.pointerId);
         const sx = e.clientX, od = seg.duration;
+        const historySnapshot = snapshotTimelineState();
         function onMove(mv) {
             let newDur = Math.max(0.25, od + (mv.clientX - sx) / editorState.pxPerSec);
             const neighbor = getNeighborBounds(track, seg.id);
@@ -3346,6 +4270,9 @@ function createSegmentEl(seg, track) {
         trimR.addEventListener('pointermove', onMove);
         trimR.addEventListener('pointerup', () => {
             trimR.removeEventListener('pointermove', onMove);
+            if (Math.abs(seg.duration - od) > 1e-6) {
+                pushTimelineHistory(historySnapshot);
+            }
             renderTimeline();
         }, { once: true });
     });
@@ -3390,15 +4317,21 @@ function dropMediaOnTrack(trackId, mediaId, startTime) {
     let track = editorState.tracks.find(t => t.id === trackId);
     const media = editorState.mediaItems.find(m => m.id === mediaId);
     if (!track || !media) return;
+    const historySnapshot = snapshotTimelineState();
+    let historyPushed = false;
 
     // Type enforcement
     if (media.type === 'text') {
         if (track.type !== 'text') {
+            pushTimelineHistory(historySnapshot);
+            historyPushed = true;
             track = ensureTextTrack();
         }
     }
     if (media.type === 'effect') {
         if (track.type !== 'effect') {
+            if (!historyPushed) pushTimelineHistory(historySnapshot);
+            historyPushed = true;
             track = ensureEffectTrack();
         }
     }
@@ -3419,6 +4352,7 @@ function dropMediaOnTrack(trackId, mediaId, startTime) {
         return;
     }
 
+    if (!historyPushed) pushTimelineHistory(historySnapshot);
     const snap = getSnapInfo(track, startTime, media.duration || 5, null);
     const proposed = snap.snapped ? snap.start : startTime;
     const finalStart = resolveNonOverlap(track, media.duration || 5, proposed, null);
@@ -3460,16 +4394,24 @@ function dropMediaOnTrack(trackId, mediaId, startTime) {
     if (media.type === 'video' && window.ensureVideoCached) {
         window.ensureVideoCached(mediaId, { silent: true });
     }
+    if (media.type === 'image' && window.ensureImageCached) {
+        window.ensureImageCached(mediaId, { silent: true });
+    }
+    if (media.type === 'audio' && window.ensureAudioCached) {
+        window.ensureAudioCached(mediaId, { silent: true });
+    }
 }
 
-function removeSegment(trackId, segId) {
+function removeSegment(trackId, segId, { skipHistory = false } = {}) {
     const track = editorState.tracks.find(t => t.id === trackId);
+    if (!skipHistory) pushTimelineHistory();
     if (track) track.segments = track.segments.filter(s => s.id !== segId);
     editorState.transitions = editorState.transitions.filter(t => t.leftId !== segId && t.rightId !== segId);
     renderTimeline();
 }
 
 function addTrack(type) {
+    pushTimelineHistory();
     const count = editorState.tracks.filter(t => t.type === type).length;
     const newTrack = {
         id: type + '-' + Date.now(), type,
@@ -3495,6 +4437,7 @@ function addTrack(type) {
 }
 
 function clearTimeline() {
+    pushTimelineHistory();
     editorState.tracks.forEach(t => t.segments = []);
     editorState.transitions = [];
     renderTimeline();
@@ -3545,10 +4488,17 @@ function rafTick(now) {
     if (editorState.exporting) renderExportFrame();
     renderPlayhead();
     updateTimeDisplay();
+    const playbackEnd = getTimelineContentEnd();
     const limit = editorState.exporting && editorState.exportEnd != null
         ? editorState.exportEnd
-        : editorState.timelineDur;
+        : playbackEnd;
     if (editorState.currentTime >= limit) {
+        if (!editorState.exporting) {
+            editorState.currentTime = playbackEnd;
+            updatePreviewForTime(editorState.currentTime);
+            renderPlayhead();
+            updateTimeDisplay();
+        }
         stopPlayback();
         // Finalize export if recording
         if (editorState.exporting && editorState.exportRecorder?.state === 'recording') {
@@ -3586,6 +4536,7 @@ function updatePreviewForTime(t) {
         if (!layers.find(l => l.seg.id === editorState.previewSegId)) {
             editorState.previewSegId = top?.seg.id || null;
         }
+        updatePreviewScaleHandle();
         editorState.previewOpacity = 1;
     } else {
         clearPreviewLayers();
@@ -3597,15 +4548,24 @@ function updatePreviewForTime(t) {
             editorState.previewOpacity = 1;
         }
         editorState.previewSegId = null;
+        updatePreviewScaleHandle();
     }
 
     // Sync audio segments
     for (const track of editorState.tracks) {
         for (const seg of track.segments) {
             if (seg.mediaType !== 'audio') continue;
+            const audioSrc = getEditorMediaPlaybackSrc(seg);
+            if (!audioSrc) {
+                if (seg.mediaId) ensureEditorMediaCache(seg.mediaId, 'audio');
+                if (seg._audioEl && !seg._audioEl.paused) seg._audioEl.pause();
+                continue;
+            }
             if (!seg._audioEl) {
-                seg._audioEl = new Audio(seg.src);
+                seg._audioEl = new Audio(audioSrc);
                 seg._audioEl.preload = 'auto';
+            } else if (seg._audioEl.src !== audioSrc) {
+                seg._audioEl.src = audioSrc;
             }
             const aud = seg._audioEl;
             aud.muted = !!seg.muted;
@@ -3640,7 +4600,7 @@ function updateTimeDisplay() {
 
 // ── Zoom ──────────────────────────────────────────────────────
 function setZoom(px, silent) {
-    editorState.pxPerSec = Math.max(8, Math.min(500, px));
+    editorState.pxPerSec = Math.max(2, Math.min(500, px));
     eq('tl-zoom-label').textContent = Math.round(editorState.pxPerSec) + 'px/s';
     renderRuler();
     renderTracks();
@@ -3964,6 +4924,7 @@ async function exportMp4FromServer(blob) {
 document.addEventListener('keydown', e => {
     if (!document.getElementById('page-editor') || document.getElementById('page-editor').classList.contains('hidden')) return;
     if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+    if (e.target.isContentEditable || document.activeElement?.isContentEditable) return;
     const isMod = e.metaKey || e.ctrlKey;
     const key = String(e.key || '').toLowerCase();
     if (isMod && key === 'c') {
@@ -3980,6 +4941,7 @@ document.addEventListener('keydown', e => {
     if (e.code === 'Home') { e.preventDefault(); seekTo(0); }
     if (e.code === 'KeyM' && editorState.selectedSegId) {
         // Mute selected segment
+        pushTimelineHistory();
         editorState.tracks.forEach(t => {
             const seg = t.segments.find(s => s.id === editorState.selectedSegId);
             if (seg) seg.muted = !seg.muted;
@@ -3988,12 +4950,21 @@ document.addEventListener('keydown', e => {
     }
     if (e.code === 'Delete' || e.code === 'Backspace') {
         if (editorState.selectedSegId) {
-            editorState.tracks.forEach(t => {
-                t.segments = t.segments.filter(s => s.id !== editorState.selectedSegId);
-            });
+            const track = findTrackBySegId(editorState.selectedSegId);
+            const segId = editorState.selectedSegId;
             editorState.selectedSegId = null;
-            renderTimeline();
+            if (track) removeSegment(track.id, segId);
         }
+    }
+    if (isMod && key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undoTimeline();
+        return;
+    }
+    if ((isMod && key === 'z' && e.shiftKey) || (isMod && key === 'y')) {
+        e.preventDefault();
+        redoTimeline();
+        return;
     }
 });
 

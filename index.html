@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="editor.css" />
     <link rel="stylesheet" href="images.css" />
+    <link rel="stylesheet" href="audio.css" />
 </head>
 
 <body>
@@ -47,6 +48,15 @@
                     </svg>
                     Images
                 </button>
+                <button class="app-tab" data-tab="audio">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M9 18V5L21 3V16" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round" />
+                        <circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="2" />
+                        <circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="2" />
+                    </svg>
+                    Audio
+                </button>
                 <button class="app-tab active" data-tab="generate">
                     <svg viewBox="0 0 24 24" fill="none">
                         <polygon points="5,3 19,12 5,21" fill="currentColor" />
@@ -66,6 +76,10 @@
             </nav>
 
             <div class="header-right">
+                <label class="project-autosave-toggle" id="project-autosave-wrap" title="Autosave requires a saved project target">
+                    <input type="checkbox" id="project-autosave-toggle" />
+                    <span>Auto Save</span>
+                </label>
                 <button class="header-btn" id="header-save-project">Save Project</button>
                 <button class="header-btn" id="header-load-project">Load Project</button>
 
@@ -98,6 +112,34 @@
                                 <button class="hak-eye" id="toggle-key" title="Show/hide"
                                     aria-label="Toggle visibility">
                                     <svg id="eye-icon" viewBox="0 0 24 24" fill="none">
+                                        <path d="M1 12C1 12 5 4 12 4C19 4 23 12 23 12C23 12 19 20 12 20C5 20 1 12 1 12Z"
+                                            stroke="currentColor" stroke-width="2" />
+                                        <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <label class="hak-label" for="openai-api-key">OpenAI API Key (Images)</label>
+                            <div class="hak-input-row">
+                                <input type="password" id="openai-api-key" class="hak-input"
+                                    placeholder="Paste your OpenAI key…"
+                                    autocomplete="off" />
+                                <button class="hak-eye" id="toggle-openai-key" title="Show/hide"
+                                    aria-label="Toggle visibility">
+                                    <svg id="eye-icon-openai" viewBox="0 0 24 24" fill="none">
+                                        <path d="M1 12C1 12 5 4 12 4C19 4 23 12 23 12C23 12 19 20 12 20C5 20 1 12 1 12Z"
+                                            stroke="currentColor" stroke-width="2" />
+                                        <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <label class="hak-label" for="sonauto-api-key">Sonauto API Key (Audio)</label>
+                            <div class="hak-input-row">
+                                <input type="password" id="sonauto-api-key" class="hak-input"
+                                    placeholder="Paste your Sonauto key…"
+                                    autocomplete="off" />
+                                <button class="hak-eye" id="toggle-sonauto-key" title="Show/hide"
+                                    aria-label="Toggle visibility">
+                                    <svg id="eye-icon-sonauto" viewBox="0 0 24 24" fill="none">
                                         <path d="M1 12C1 12 5 4 12 4C19 4 23 12 23 12C23 12 19 20 12 20C5 20 1 12 1 12Z"
                                             stroke="currentColor" stroke-width="2" />
                                         <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2" />
@@ -568,7 +610,11 @@
                         </div>
                         <div class="media-section media-section--grow">
                             <div class="media-section-header">
-                                <span class="media-section-title">Generated Videos</span>
+                                <div class="media-section-tabs">
+                                    <button class="media-section-tab active" data-media-tab="video">Generated Videos</button>
+                                    <button class="media-section-tab" data-media-tab="image">Generated Images</button>
+                                    <button class="media-section-tab" data-media-tab="audio">Generated Audio</button>
+                                </div>
                                 <span class="media-count-badge" id="media-gen-count">0</span>
                             </div>
                             <div class="media-section-controls">
@@ -578,8 +624,14 @@
                                     <button class="media-page-btn" id="media-gen-next" disabled>Next</button>
                                 </div>
                             </div>
-                            <div id="media-generated" class="media-list">
+                            <div id="media-generated-video" class="media-list">
                                 <div class="media-empty-hint">Generate videos in the Generate tab to see them here</div>
+                            </div>
+                            <div id="media-generated-image" class="media-list hidden">
+                                <div class="media-empty-hint">Generate images in the Images tab to see them here</div>
+                            </div>
+                            <div id="media-generated-audio" class="media-list hidden">
+                                <div class="media-empty-hint">Generate audio in the Audio tab to see them here</div>
                             </div>
                         </div>
                     </div>
@@ -762,6 +814,13 @@
             <div class="main-layout">
                 <!-- Left Panel: Settings -->
                 <aside class="control-panel">
+                    <button class="control-hide-btn" title="Hide controls" aria-label="Hide controls">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path d="M21 12H9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            <path d="M13 8L9 12L13 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <rect x="17" y="6" width="4" height="12" rx="2" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                    </button>
                     <section class="panel-section">
                         <h3 class="section-title">
                             <svg viewBox="0 0 24 24" fill="none">
@@ -786,6 +845,14 @@
                             Parameters
                         </h3>
                         <div class="input-group">
+                            <label class="input-label">Outputs <span class="label-value"
+                                    id="img-output-label">1 image</span></label>
+                            <div class="slider-wrap">
+                                <input type="range" id="img-output-range" min="1" max="4" value="1" step="1" />
+                            </div>
+                            <span class="input-hint" id="img-output-hint">Up to 15 total (references + outputs)</span>
+                        </div>
+                        <div class="input-group">
                             <label class="input-label">Resolution</label>
                             <div class="size-grid">
                                 <button class="size-btn img-size-btn" data-size="1K">1K</button>
@@ -795,11 +862,60 @@
                             </div>
                         </div>
                         <div class="input-group">
+                            <label class="input-label">Aspect ratio</label>
+                            <div class="size-grid">
+                                <button class="size-btn img-ratio-btn selected" data-ratio="auto">
+                                    <span class="img-ratio-icon adaptive-icon"></span>
+                                    Auto
+                                </button>
+                                <button class="size-btn img-ratio-btn" data-ratio="1:1">
+                                    <span class="img-ratio-icon square-icon"></span>
+                                    1:1
+                                </button>
+                                <button class="size-btn img-ratio-btn" data-ratio="16:9">
+                                    <span class="img-ratio-icon landscape-icon"></span>
+                                    16:9
+                                </button>
+                                <button class="size-btn img-ratio-btn" data-ratio="9:16">
+                                    <span class="img-ratio-icon portrait-icon"></span>
+                                    9:16
+                                </button>
+                                <button class="size-btn img-ratio-btn" data-ratio="4:3">
+                                    <span class="img-ratio-icon landscape-icon"></span>
+                                    4:3
+                                </button>
+                                <button class="size-btn img-ratio-btn" data-ratio="3:4">
+                                    <span class="img-ratio-icon portrait-icon"></span>
+                                    3:4
+                                </button>
+                                <button class="size-btn img-ratio-btn" data-ratio="3:2">
+                                    <span class="img-ratio-icon landscape-icon"></span>
+                                    3:2
+                                </button>
+                                <button class="size-btn img-ratio-btn" data-ratio="2:3">
+                                    <span class="img-ratio-icon portrait-icon"></span>
+                                    2:3
+                                </button>
+                                <button class="size-btn img-ratio-btn" data-ratio="21:9">
+                                    <span class="img-ratio-icon landscape-icon"></span>
+                                    21:9
+                                </button>
+                            </div>
+                        </div>
+                        <div class="input-group">
                             <label class="input-label">Format</label>
                             <div class="format-row">
                                 <button class="format-btn img-format-btn selected" data-format="png">PNG</button>
                                 <button class="format-btn img-format-btn" data-format="jpeg">JPEG</button>
                             </div>
+                            <span class="input-hint" id="img-format-hint">Seedream 4.5/4.0 output JPEG only</span>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Prompt optimization</label>
+                            <select id="img-optimize-select" class="img-select">
+                                <option value="standard">Standard</option>
+                                <option value="fast">Fast (Seedream 4.0 only)</option>
+                            </select>
                         </div>
                     </section>
 
@@ -850,20 +966,53 @@
                     </section>
 
                 </aside>
+                <button class="controls-tab" title="Show controls" aria-label="Show controls">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M9 6L15 12L9 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
                 <!-- Right Panel -->
                 <div class="content-panel">
                     <section class="prompt-section">
                         <div class="prompt-header">
                             <h2 class="prompt-title">Generate Image</h2>
                         </div>
-                        <div class="prompt-body">
-                            <div class="textarea-wrap">
-                                <textarea id="img-prompt" class="prompt-textarea"
-                                    placeholder="Describe the image you want to generate…&#10;&#10;e.g. A cyberpunk city at dusk, neon-lit streets, ultra-realistic, cinematic lighting…"
-                                    maxlength="4096"></textarea>
-                                <div class="prompt-meta-info">
-                                    <span class="char-count"><span id="img-char-count">0</span>/4096</span>
+                        <div class="prompt-surface img-prompt-surface">
+                            <div class="prompt-top img-prompt-top">
+                                <div class="prompt-frames img-prompt-frames">
+                                    <div class="img-reference-header">
+                                        <div class="reference-deck img-reference-deck" id="img-reference-deck"></div>
+                                        <div class="reference-controls">
+                                            <button class="reference-add-btn" id="img-reference-add" type="button">
+                                                + Add reference images
+                                            </button>
+                                            <span class="reference-hint" id="img-reference-hint">Up to 14 images</span>
+                                        </div>
+                                        <input type="file" id="img-reference-input" accept="image/*" multiple hidden />
+                                    </div>
                                 </div>
+                                <div class="prompt-input">
+                                    <div class="prompt-body">
+                                        <div class="textarea-wrap">
+                                            <textarea id="img-prompt" class="prompt-textarea"
+                                                placeholder="Describe the image you want to generate…&#10;&#10;Tip: Add reference images to guide style or content."
+                                                maxlength="4096"></textarea>
+                                            <div class="prompt-meta-info">
+                                                <span class="char-count"><span id="img-char-count">0</span>/4096</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="prompt-toolbar img-prompt-toolbar">
+                                <span class="prompt-chip info" id="img-pill-model">Model —</span>
+                                <span class="prompt-chip info" id="img-pill-inputs">Inputs —</span>
+                                <span class="prompt-chip info" id="img-pill-size">Size —</span>
+                                <span class="prompt-chip info" id="img-pill-ratio">Ratio —</span>
+                                <span class="prompt-chip info" id="img-pill-format">Format —</span>
+                                <span class="prompt-chip info" id="img-pill-optimize">Optimize —</span>
+                                <span class="prompt-chip info" id="img-pill-outputs">Outputs —</span>
+                                <span class="prompt-chip info" id="img-pill-cost">Est. cost —</span>
                             </div>
                         </div>
                         <div class="generate-bar">
@@ -884,6 +1033,12 @@
                         <div class="img-output-header">
                             <span class="img-output-title">Generated Images</span>
                             <span class="img-count-badge" id="img-count-badge">0</span>
+                            <div class="video-output-actions">
+                                <button class="video-output-btn ghost" id="img-refresh-btn">Refresh</button>
+                                <button class="video-output-btn ghost" id="img-prev-page">Prev</button>
+                                <button class="video-output-btn ghost" id="img-next-page">Next</button>
+                                <button class="video-output-btn ghost" id="img-export-images">Export Images</button>
+                            </div>
                         </div>
                         <div id="img-empty-state" class="image-empty-state">
                             <div class="image-empty-icon">
@@ -905,6 +1060,280 @@
                             <p>Select a model, resolution, enter a prompt and hit Generate.</p>
                         </div>
                         <div class="image-grid" id="img-grid"></div>
+                    </section>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════════════════════════════════════
+             AUDIO TAB (inside app-shell for height)
+             ═══════════════════════════════════════ -->
+        <div class="tab-page hidden" id="page-audio">
+            <div class="main-layout">
+                <aside class="control-panel">
+                    <button class="control-hide-btn" title="Hide controls" aria-label="Hide controls">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path d="M21 12H9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            <path d="M13 8L9 12L13 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <rect x="17" y="6" width="4" height="12" rx="2" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                    </button>
+                    <section class="panel-section">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <path d="M9 18V5L21 3V16" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" stroke-linejoin="round" />
+                                <circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="2" />
+                                <circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="2" />
+                            </svg>
+                            Model
+                        </h3>
+                        <div class="model-grid" id="audio-model-grid"></div>
+                    </section>
+                    <div class="divider"></div>
+                    <section class="panel-section">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <path
+                                    d="M12 2V6M12 18V22M4.93 4.93L7.76 7.76M16.24 16.24L19.07 19.07M2 12H6M18 12H22M4.93 19.07L7.76 16.24M16.24 7.76L19.07 4.93"
+                                    stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                            </svg>
+                            Parameters
+                        </h3>
+                        <div class="input-group">
+                            <label class="input-label">Outputs <span class="label-value"
+                                    id="audio-output-label">1 song</span></label>
+                            <div class="slider-wrap">
+                                <input type="range" id="audio-output-range" min="1" max="2" value="1" step="1" />
+                            </div>
+                            <span class="input-hint" id="audio-output-hint">v2 supports 1–2 songs · v3 always 1</span>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Prompt strength <span class="label-value"
+                                    id="audio-prompt-strength-label">2.0</span></label>
+                            <div class="slider-wrap">
+                                <input type="range" id="audio-prompt-strength" min="0" max="4" step="0.1" value="2" />
+                            </div>
+                            <span class="input-hint">Higher = closer to prompt, less natural</span>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Balance strength <span class="label-value"
+                                    id="audio-balance-label">0.7</span></label>
+                            <div class="slider-wrap">
+                                <input type="range" id="audio-balance-strength" min="0" max="1" step="0.05" value="0.7" />
+                            </div>
+                            <span class="input-hint">Higher = more natural vocals (v2 only)</span>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">BPM</label>
+                            <input id="audio-bpm" class="img-select" placeholder="auto or number" />
+                            <span class="input-hint">Set to "auto" or a number (v2 only)</span>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Seed</label>
+                            <input id="audio-seed" class="img-select" placeholder="Optional seed" />
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Output format</label>
+                            <select id="audio-format" class="img-select">
+                                <option value="ogg" selected>OGG (Opus)</option>
+                                <option value="mp3">MP3</option>
+                                <option value="wav">WAV</option>
+                                <option value="flac">FLAC</option>
+                                <option value="m4a">M4A (AAC)</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Bitrate (mp3/m4a)</label>
+                            <select id="audio-bitrate" class="img-select">
+                                <option value="">Auto</option>
+                                <option value="128">128 kbps</option>
+                                <option value="192">192 kbps</option>
+                                <option value="256">256 kbps</option>
+                                <option value="320">320 kbps</option>
+                            </select>
+                        </div>
+                        <div class="toggle-row">
+                            <div class="toggle-item" id="audio-align-toggle">
+                                <div class="toggle-info">
+                                    <span class="toggle-label">Align lyrics</span>
+                                    <span class="toggle-desc">Sync lyrics to audio</span>
+                                </div>
+                                <label class="toggle">
+                                    <input type="checkbox" id="audio-align-lyrics" />
+                                    <span class="track"></span>
+                                </label>
+                            </div>
+                            <div class="toggle-item" id="audio-stream-toggle">
+                                <div class="toggle-info">
+                                    <span class="toggle-label">Enable streaming</span>
+                                    <span class="toggle-desc">Listen while generating (v3 only)</span>
+                                </div>
+                                <label class="toggle">
+                                    <input type="checkbox" id="audio-streaming" />
+                                    <span class="track"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </section>
+
+                    <div class="divider"></div>
+
+                    <section class="panel-section" id="audio-section-preview">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <path d="M8 6L2 12L8 18M16 6L22 12L16 18" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                            Request Preview
+                            <button class="copy-btn" id="audio-copy-json" title="Copy JSON">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor"
+                                        stroke-width="2" />
+                                    <path
+                                        d="M5 15H4C2.895 15 2 14.105 2 13V4C2 2.895 2.895 2 4 2H13C14.105 2 15 2.895 15 4V5"
+                                        stroke="currentColor" stroke-width="2" />
+                                </svg>
+                            </button>
+                        </h3>
+                        <pre class="code-preview" id="audio-json-preview"><code>{}</code></pre>
+                    </section>
+
+                    <div class="divider"></div>
+
+                    <section class="panel-section" id="audio-section-response">
+                        <h3 class="section-title">
+                            <svg viewBox="0 0 24 24" fill="none">
+                                <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor"
+                                    stroke-width="2" />
+                                <path d="M7 8H17M7 12H17M7 16H13" stroke="currentColor" stroke-width="2"
+                                    stroke-linecap="round" />
+                            </svg>
+                            Response
+                            <button class="copy-btn" id="audio-copy-response" title="Copy Response">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor"
+                                        stroke-width="2" />
+                                    <path
+                                        d="M5 15H4C2.895 15 2 14.105 2 13V4C2 2.895 2.895 2 4 2H13C14.105 2 15 2.895 15 4V5"
+                                        stroke="currentColor" stroke-width="2" />
+                                </svg>
+                            </button>
+                        </h3>
+                        <pre class="code-preview" id="audio-json-response"><code>{}</code></pre>
+                    </section>
+                </aside>
+                <button class="controls-tab" title="Show controls" aria-label="Show controls">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M9 6L15 12L9 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+                <div class="content-panel">
+                    <section class="prompt-section">
+                        <div class="prompt-header">
+                            <h2 class="prompt-title">Generate Music</h2>
+                        </div>
+                        <div class="prompt-surface audio-prompt-surface">
+                            <div class="prompt-top audio-prompt-top">
+                                <div class="prompt-frames audio-prompt-frames">
+                                    <div class="audio-helper-stack">
+                                        <div class="audio-helper-card">
+                                            <div class="audio-helper-title">Tips</div>
+                                            <p>Use tags like “rock, ambient, cinematic”.</p>
+                                            <p>Leave prompt empty if you want AI to choose the style.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="prompt-input">
+                                    <div class="prompt-body">
+                                        <div class="textarea-wrap">
+                                            <textarea id="audio-prompt" class="prompt-textarea"
+                                                placeholder="Describe the mood, instruments, and vibe…"
+                                                maxlength="2048"></textarea>
+                                            <div class="prompt-meta-info">
+                                                <span class="char-count"><span id="audio-char-count">0</span>/2048</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="prompt-body">
+                                        <div class="textarea-wrap" style="margin-top:12px;">
+                                            <textarea id="audio-lyrics" class="prompt-textarea" style="min-height:140px;"
+                                                placeholder="Optional lyrics (leave empty for AI-generated lyrics)…"
+                                                maxlength="4000"></textarea>
+                                            <div class="prompt-meta-info">
+                                                <span class="char-count"><span id="audio-lyrics-count">0</span>/4000</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="prompt-body">
+                                        <div class="textarea-wrap" style="margin-top:12px;">
+                                            <input id="audio-tags" class="prompt-input-field"
+                                                placeholder="Tags (comma separated) e.g. rock, energetic, guitar" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="prompt-toolbar audio-prompt-toolbar">
+                                <span class="prompt-chip info" id="audio-pill-model">Model —</span>
+                                <span class="prompt-chip info" id="audio-pill-outputs">Outputs —</span>
+                                <span class="prompt-chip info" id="audio-pill-format">Format —</span>
+                                <span class="prompt-chip info" id="audio-pill-cost">Est. cost —</span>
+                                <div class="audio-toolbar-toggle" id="audio-instrumental-toggle">
+                                    <div class="toggle-info">
+                                        <span class="toggle-label">Instrumental</span>
+                                    </div>
+                                    <label class="toggle">
+                                        <input type="checkbox" id="audio-instrumental" />
+                                        <span class="track"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="generate-bar">
+                            <button class="generate-btn" id="audio-generate-btn">
+                                <span class="btn-icon"><svg viewBox="0 0 24 24" fill="none">
+                                        <path d="M9 18V5L21 3V16" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" stroke-linejoin="round" />
+                                        <circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="2" />
+                                        <circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="2" />
+                                    </svg></span>
+                                <span class="btn-text">Generate Music</span>
+                            </button>
+                        </div>
+                    </section>
+                    <section class="output-section"
+                        style="padding:0;display:flex;flex-direction:column;min-height:0;overflow:hidden;">
+                        <div class="img-output-header">
+                            <span class="img-output-title">Generated Audio</span>
+                            <span class="img-count-badge" id="audio-count-badge">0</span>
+                            <div class="video-output-actions">
+                                <button class="video-output-btn ghost" id="audio-refresh-btn">Refresh</button>
+                                <button class="video-output-btn ghost" id="audio-prev-page">Prev</button>
+                                <button class="video-output-btn ghost" id="audio-next-page">Next</button>
+                                <button class="video-output-btn ghost" id="audio-export-audio">Export Audio</button>
+                            </div>
+                        </div>
+                        <div id="audio-empty-state" class="image-empty-state">
+                            <div class="image-empty-icon">
+                                <svg viewBox="0 0 80 80" fill="none">
+                                    <rect x="8" y="8" width="64" height="64" rx="6" stroke="url(#ga1)"
+                                        stroke-width="2" />
+                                    <path d="M24 52V28L52 20V44" stroke="url(#ga1)" stroke-width="3"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                    <circle cx="20" cy="52" r="6" stroke="url(#ga1)" stroke-width="3" />
+                                    <circle cx="52" cy="44" r="6" stroke="url(#ga1)" stroke-width="3" />
+                                    <defs>
+                                        <linearGradient id="ga1" x1="0%" y1="0%" x2="100%" y2="100%">
+                                            <stop offset="0%" stop-color="#22d3ee" />
+                                            <stop offset="100%" stop-color="#6366f1" />
+                                        </linearGradient>
+                                    </defs>
+                                </svg>
+                            </div>
+                            <h3>No audio yet</h3>
+                            <p>Enter a prompt and click Generate to create music.</p>
+                        </div>
+                        <div class="audio-grid" id="audio-grid"></div>
                     </section>
                 </div>
             </div>
@@ -937,12 +1366,85 @@
         </div>
     </div>
 
+    <div class="modal-overlay hidden image-picker-modal" id="image-picker-modal" role="dialog" aria-modal="true"
+        aria-labelledby="image-picker-title">
+        <div class="modal picker-modal">
+            <div class="modal-header">
+                <div class="modal-icon">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M4 6H20M4 18H20M4 6L8 12L4 18M20 6L16 12L20 18" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                </div>
+                <div class="modal-title" id="image-picker-title">Choose a generated image</div>
+                <button class="modal-close" id="image-picker-close" aria-label="Close">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M6 6L18 18M6 18L18 6" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" />
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-message image-picker-hint" id="image-picker-hint">
+                Pick from generated images or upload a new one.
+            </div>
+            <div class="image-picker-actions">
+                <button class="picker-btn" id="image-picker-upload" type="button">Upload image</button>
+                <button class="picker-btn ghost" id="image-picker-refresh" type="button">Refresh</button>
+            </div>
+            <div class="image-picker-grid" id="image-picker-grid"></div>
+            <div class="image-picker-footer">
+                <span class="image-picker-selected" id="image-picker-selected">0 selected</span>
+                <button class="picker-btn primary" id="image-picker-add" type="button" disabled>Add Selected</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden image-preview-modal" id="image-preview-modal" role="dialog" aria-modal="true"
+        aria-labelledby="image-preview-title">
+        <div class="modal image-preview-shell">
+            <div class="modal-header">
+                <div class="modal-icon">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" stroke-width="2" />
+                        <path d="M7 15L11 11L14 14L17 11L20 14" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round" />
+                        <circle cx="9" cy="9" r="1.5" fill="currentColor" />
+                    </svg>
+                </div>
+                <div class="modal-title" id="image-preview-title">Image Preview</div>
+                <button class="modal-close" id="image-preview-close" aria-label="Close">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M6 6L18 18M6 18L18 6" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" />
+                    </svg>
+                </button>
+            </div>
+            <div class="image-preview-stage">
+                <button class="image-preview-nav prev" id="image-preview-prev" type="button" aria-label="Previous image">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M15 6L9 12L15 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg>
+                </button>
+                <img id="image-preview-img" alt="" />
+                <button class="image-preview-nav next" id="image-preview-next" type="button" aria-label="Next image">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <path d="M9 6L15 12L9 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg>
+                </button>
+            </div>
+            <div class="image-preview-caption" id="image-preview-caption"></div>
+        </div>
+    </div>
+
     <!-- Toast -->
     <div class="toast-container" id="toast-container"></div>
 
     <script src="app.js"></script>
     <script src="editor.js"></script>
     <script src="images.js"></script>
+    <script src="audio.js"></script>
 </body>
 
 

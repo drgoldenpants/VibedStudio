@@ -11,6 +11,8 @@ const API_BASE = IS_HTTP_ORIGIN
 // ── State ─────────────────────────────────────────────────────
 const state = {
   apiKey: localStorage.getItem('vibedstudio_api_key') || '',
+  openaiApiKey: localStorage.getItem('vibedstudio_openai_api_key') || '',
+  sonautoApiKey: localStorage.getItem('vibedstudio_sonauto_api_key') || '',
   model: 'seedance-1-5-pro-251215',
   ratio: '16:9',
   duration: 5,
@@ -18,7 +20,6 @@ const state = {
   returnLastFrame: true,
   serviceTier: 'flex',
   generateAudio: true,
-  watermark: false,
   cameraFixed: false,
   seed: null,
   currency: localStorage.getItem('vibedstudio_currency') || 'USD',
@@ -41,7 +42,11 @@ window.state = state;
 // ── DOM Refs ──────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const apiKeyInput = $('api-key');
+const openAiKeyInput = $('openai-api-key');
+const sonautoKeyInput = $('sonauto-api-key');
 const toggleKeyBtn = $('toggle-key');
+const toggleOpenAiKeyBtn = $('toggle-openai-key');
+const toggleSonautoKeyBtn = $('toggle-sonauto-key');
 const errorModal = $('error-modal');
 const modalMessage = $('modal-message');
 const modalTitle = $('modal-title');
@@ -123,6 +128,15 @@ const firstFrameThumb = $('frame-first-thumb');
 const lastFrameThumb = $('frame-last-thumb');
 const firstFrameRemove = $('frame-first-remove');
 const lastFrameRemove = $('frame-last-remove');
+const imagePickerModal = $('image-picker-modal');
+const imagePickerTitle = $('image-picker-title');
+const imagePickerHint = $('image-picker-hint');
+const imagePickerClose = $('image-picker-close');
+const imagePickerGrid = $('image-picker-grid');
+const imagePickerUpload = $('image-picker-upload');
+const imagePickerRefresh = $('image-picker-refresh');
+const imagePickerAdd = $('image-picker-add');
+const imagePickerSelected = $('image-picker-selected');
 let listSyncTimer = null;
 let listSyncInFlight = false;
 const activePolls = new Map();
@@ -131,14 +145,185 @@ const VIDEO_PAGE_SIZE = 9;
 let videoPage = 1;
 const videoCacheInflight = new Set();
 let serverThumbsDisabled = false;
+let imagePickerTarget = null;
+let imagePickerRecords = [];
+let imagePickerSelection = new Set();
+let imagePickerSelectionOrder = [];
+let imagePickerObjectUrls = [];
+let imageHistorySyncTimer = null;
 
 function getProxiedVideoUrl(videoUrl) {
   if (!videoUrl) return videoUrl;
   if (videoUrl.startsWith('blob:')) return videoUrl;
+  if (videoUrl.startsWith('data:')) return videoUrl;
   if (location.protocol !== 'file:' && location.origin !== 'null') {
     return `/api/video?url=${encodeURIComponent(videoUrl)}`;
   }
   return videoUrl;
+}
+
+function getProxiedImageUrl(url) {
+  return getProxiedVideoUrl(url);
+}
+
+function scheduleImageHistorySync(provider) {
+  if (imageHistorySyncTimer) clearTimeout(imageHistorySyncTimer);
+  imageHistorySyncTimer = setTimeout(() => {
+    if (typeof window.syncImageHistoryFromApi === 'function') {
+      window.syncImageHistoryFromApi(provider);
+    }
+  }, 800);
+}
+
+function clearImagePickerObjectUrls() {
+  imagePickerObjectUrls.forEach(url => {
+    try { URL.revokeObjectURL(url); } catch {}
+  });
+  imagePickerObjectUrls = [];
+}
+
+function updateImagePickerSelectionLabel() {
+  if (!imagePickerSelected) return;
+  const count = imagePickerSelection.size;
+  imagePickerSelected.textContent = `${count} selected`;
+  if (imagePickerAdd) imagePickerAdd.disabled = count === 0;
+}
+
+async function loadImagePickerRecords() {
+  if (!imagePickerGrid) return [];
+  let records = [];
+  try {
+    if (typeof ensureDBReady === 'function') {
+      const ready = await ensureDBReady();
+      if (!ready) return [];
+    }
+    records = await dbGetAll('images');
+  } catch (e) {
+    console.warn('Image picker load failed:', e);
+    return [];
+  }
+  if (!Array.isArray(records)) return [];
+  records.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  return records;
+}
+
+function getImagePickerThumb(record) {
+  if (!record) return '';
+  if (record.blob instanceof Blob) {
+    const url = URL.createObjectURL(record.blob);
+    imagePickerObjectUrls.push(url);
+    return url;
+  }
+  if (record.blobUrl) return record.blobUrl;
+  return record.url || '';
+}
+
+async function fetchImageDataUrlFromRecord(record) {
+  if (!record) return null;
+  if (record.blob instanceof Blob) {
+    return await blobToDataUrl(record.blob);
+  }
+  if (record.blobBase64 && typeof record.blobBase64 === 'string' && record.blobBase64.startsWith('data:')) {
+    return record.blobBase64;
+  }
+  if (record.blobUrl && record.blobUrl.startsWith('data:')) return record.blobUrl;
+  const src = record.url || record.blobUrl;
+  if (!src) return null;
+  try {
+    const res = await fetch(getProxiedImageUrl(src), { cache: 'no-store' });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return await blobToDataUrl(blob);
+  } catch {
+    return null;
+  }
+}
+
+function renderImagePickerGrid() {
+  if (!imagePickerGrid) return;
+  imagePickerGrid.innerHTML = '';
+  clearImagePickerObjectUrls();
+  if (!imagePickerRecords.length) {
+    const empty = document.createElement('div');
+    empty.className = 'image-picker-empty';
+    empty.textContent = 'No generated images yet. Generate some images first or upload.';
+    imagePickerGrid.appendChild(empty);
+    updateImagePickerSelectionLabel();
+    return;
+  }
+  imagePickerRecords.forEach(record => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'image-picker-item';
+    item.dataset.id = record.id;
+    const img = document.createElement('img');
+    img.src = getImagePickerThumb(record);
+    img.alt = record.prompt || record.id;
+    item.appendChild(img);
+    item.addEventListener('click', () => {
+      const id = record.id;
+      if (!id) return;
+      const isMulti = imagePickerTarget === 'reference';
+      if (!isMulti) {
+        imagePickerSelection.clear();
+        imagePickerSelectionOrder = [];
+        imagePickerGrid.querySelectorAll('.image-picker-item').forEach(el => el.classList.remove('selected'));
+      }
+      if (imagePickerSelection.has(id)) {
+        imagePickerSelection.delete(id);
+        imagePickerSelectionOrder = imagePickerSelectionOrder.filter(x => x !== id);
+        item.classList.remove('selected');
+      } else {
+        imagePickerSelection.add(id);
+        imagePickerSelectionOrder.push(id);
+        item.classList.add('selected');
+      }
+      updateImagePickerSelectionLabel();
+    });
+    imagePickerGrid.appendChild(item);
+  });
+  updateImagePickerSelectionLabel();
+}
+
+async function openImagePicker(target) {
+  if (!imagePickerModal) return;
+  imagePickerTarget = target;
+  imagePickerSelection = new Set();
+  imagePickerSelectionOrder = [];
+  updateImagePickerSelectionLabel();
+  if (imagePickerTitle) {
+    imagePickerTitle.textContent = target === 'first'
+      ? 'Choose a first frame'
+      : target === 'last'
+        ? 'Choose a last frame'
+        : 'Choose reference images';
+  }
+  if (imagePickerHint) {
+    imagePickerHint.textContent = target === 'reference'
+      ? 'Pick one or more generated images or upload new references.'
+      : 'Pick a generated image or upload a new frame.';
+  }
+  imagePickerModal.classList.remove('hidden');
+  imagePickerRecords = await loadImagePickerRecords();
+  renderImagePickerGrid();
+}
+
+function closeImagePicker() {
+  if (!imagePickerModal) return;
+  imagePickerModal.classList.add('hidden');
+  imagePickerTarget = null;
+  imagePickerSelection.clear();
+  imagePickerSelectionOrder = [];
+  clearImagePickerObjectUrls();
+}
+
+function addReferenceImageDataUrl(dataUrl, name) {
+  if (!dataUrl) return;
+  state.referenceImages.push({
+    id: `ref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: name || 'Reference',
+    dataUrl,
+  });
 }
 
 async function ensureVideoCached(jobId, { silent = false } = {}) {
@@ -492,10 +677,11 @@ modalOk.addEventListener('click', closeErrorModal);
 errorModal.addEventListener('click', e => { if (e.target === errorModal) closeErrorModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeErrorModal(); });
 
-// ── Server Mode Gate (Images tab) ─────────────────────────────
+// ── Server Mode Gate (Images + Audio tabs) ────────────────────
 const isServerMode = location.protocol !== 'file:' && location.origin !== 'null';
 if (!isServerMode) {
   const imgTab = document.querySelector('.app-tab[data-tab="images"]');
+  const audioTab = document.querySelector('.app-tab[data-tab="audio"]');
   if (imgTab) {
     imgTab.classList.add('disabled');
     imgTab.setAttribute(
@@ -503,6 +689,14 @@ if (!isServerMode) {
       'Images require server mode. Run: python3 server.py then open http://localhost:8787'
     );
     imgTab.setAttribute('aria-disabled', 'true');
+  }
+  if (audioTab) {
+    audioTab.classList.add('disabled');
+    audioTab.setAttribute(
+      'title',
+      'Audio requires server mode. Run: python3 server.py then open http://localhost:8787'
+    );
+    audioTab.setAttribute('aria-disabled', 'true');
   }
   if (serverHelpBtn) {
     serverHelpBtn.classList.remove('hidden');
@@ -543,11 +737,12 @@ function formatElapsed(seconds) {
 
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('vibedstudio-db', 1);
+    const req = indexedDB.open('vibedstudio-db', 2);
     req.onupgradeneeded = e => {
       const d = e.target.result;
       if (!d.objectStoreNames.contains('videos')) d.createObjectStore('videos', { keyPath: 'id' });
       if (!d.objectStoreNames.contains('images')) d.createObjectStore('images', { keyPath: 'id' });
+      if (!d.objectStoreNames.contains('audio')) d.createObjectStore('audio', { keyPath: 'id' });
     };
     req.onsuccess = e => { window.db = e.target.result; resolve(); };
     req.onerror = e => reject(e.target.error);
@@ -613,7 +808,6 @@ async function saveVideoJob(job, blob) {
     lastFrameDataUrl: job.lastFrameDataUrl || null,
     referenceImages: job.referenceImages || [],
     generateAudio: !!job.generateAudio,
-    watermark: false,
     prompt: job.prompt,
     model: job.model,
     ratio: job.ratio,
@@ -678,11 +872,11 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([arr], { type: mime });
 }
 
-function startExportProgress(total) {
+function startExportProgress(total, label = 'Exporting videos…') {
   if (!exportProgress) return;
   exportProgress.classList.remove('hidden');
   exportProgressBackdrop?.classList.remove('hidden');
-  if (exportProgressText) exportProgressText.textContent = 'Exporting videos…';
+  if (exportProgressText) exportProgressText.textContent = label;
   if (exportProgressCount) exportProgressCount.textContent = `0/${total}`;
   if (exportProgressFill) exportProgressFill.style.width = '0%';
   if (exportProgressFile) exportProgressFile.textContent = '';
@@ -836,7 +1030,6 @@ async function importVideoHistory(file) {
       firstFrameDataUrl: v.firstFrameDataUrl || null,
       lastFrameDataUrl: v.lastFrameDataUrl || null,
       generateAudio: !!v.generateAudio,
-      watermark: false,
       timestamp: v.timestamp || new Date().toISOString(),
     };
     await dbPut('videos', record).catch(() => { });
@@ -909,7 +1102,11 @@ function autoDownload(url, taskId) {
 
 async function init() {
   if (state.apiKey) { apiKeyInput.value = state.apiKey; }
+  if (state.openaiApiKey && openAiKeyInput) { openAiKeyInput.value = state.openaiApiKey; }
+  if (state.sonautoApiKey && sonautoKeyInput) { sonautoKeyInput.value = state.sonautoApiKey; }
   updateHakDot();
+  if (state.apiKey) scheduleImageHistorySync('byteplus');
+  if (state.openaiApiKey) scheduleImageHistorySync('openai');
   if (resolutionGrid) {
     const selected = resolutionGrid.querySelector('.resolution-btn.selected');
     if (selected) state.resolution = selected.dataset.resolution;
@@ -997,7 +1194,23 @@ apiKeyInput.addEventListener('input', () => {
   localStorage.setItem('vibedstudio_api_key', state.apiKey);
   updateHakDot();
   if (state.apiKey) scheduleRemoteSync();
+  if (state.apiKey) scheduleImageHistorySync('byteplus');
 });
+
+if (openAiKeyInput) {
+  openAiKeyInput.addEventListener('input', () => {
+    state.openaiApiKey = openAiKeyInput.value.trim();
+    localStorage.setItem('vibedstudio_openai_api_key', state.openaiApiKey);
+    if (state.openaiApiKey) scheduleImageHistorySync('openai');
+  });
+}
+
+if (sonautoKeyInput) {
+  sonautoKeyInput.addEventListener('input', () => {
+    state.sonautoApiKey = sonautoKeyInput.value.trim();
+    localStorage.setItem('vibedstudio_sonauto_api_key', state.sonautoApiKey);
+  });
+}
 
 function updateHakDot() {
   const dot = $('hak-dot');
@@ -1029,14 +1242,37 @@ if (hakTrigger) {
 toggleKeyBtn.addEventListener('click', () => {
   const isPassword = apiKeyInput.type === 'password';
   apiKeyInput.type = isPassword ? 'text' : 'password';
+  if (openAiKeyInput && toggleOpenAiKeyBtn == null) {
+    openAiKeyInput.type = isPassword ? 'text' : 'password';
+  }
   $('eye-icon').innerHTML = isPassword
     ? `<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M1 1L23 23" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`
     : `<path d="M1 12C1 12 5 4 12 4C19 4 23 12 23 12C23 12 19 20 12 20C5 20 1 12 1 12Z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>`;
 });
 
+if (toggleOpenAiKeyBtn && openAiKeyInput) {
+  toggleOpenAiKeyBtn.addEventListener('click', () => {
+    const isPassword = openAiKeyInput.type === 'password';
+    openAiKeyInput.type = isPassword ? 'text' : 'password';
+    $('eye-icon-openai').innerHTML = isPassword
+      ? `<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M1 1L23 23" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`
+      : `<path d="M1 12C1 12 5 4 12 4C19 4 23 12 23 12C23 12 19 20 12 20C5 20 1 12 1 12Z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>`;
+  });
+}
+
+if (toggleSonautoKeyBtn && sonautoKeyInput) {
+  toggleSonautoKeyBtn.addEventListener('click', () => {
+    const isPassword = sonautoKeyInput.type === 'password';
+    sonautoKeyInput.type = isPassword ? 'text' : 'password';
+    $('eye-icon-sonauto').innerHTML = isPassword
+      ? `<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M1 1L23 23" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`
+      : `<path d="M1 12C1 12 5 4 12 4C19 4 23 12 23 12C23 12 19 20 12 20C5 20 1 12 1 12Z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>`;
+  });
+}
+
 if (toggleControlsBtn) {
   toggleControlsBtn.addEventListener('click', () => {
-    const layout = document.querySelector('.main-layout');
+    const layout = toggleControlsBtn.closest('.main-layout');
     if (!layout) return;
     const hidden = layout.classList.toggle('controls-hidden');
     toggleControlsBtn.title = hidden ? 'Show controls' : 'Hide controls';
@@ -1045,7 +1281,7 @@ if (toggleControlsBtn) {
 }
 if (controlsTab) {
   controlsTab.addEventListener('click', () => {
-    const layout = document.querySelector('.main-layout');
+    const layout = controlsTab.closest('.main-layout');
     if (!layout) return;
     layout.classList.remove('controls-hidden');
     if (toggleControlsBtn) {
@@ -1054,6 +1290,33 @@ if (controlsTab) {
     }
   });
 }
+
+document.querySelectorAll('.control-hide-btn:not(#toggle-controls)').forEach(btn => {
+  if (btn.dataset.bound === '1') return;
+  btn.dataset.bound = '1';
+  btn.addEventListener('click', () => {
+    const layout = btn.closest('.main-layout');
+    if (!layout) return;
+    const hidden = layout.classList.toggle('controls-hidden');
+    btn.title = hidden ? 'Show controls' : 'Hide controls';
+    btn.setAttribute('aria-label', btn.title);
+  });
+});
+
+document.querySelectorAll('.controls-tab:not(#controls-tab)').forEach(tab => {
+  if (tab.dataset.bound === '1') return;
+  tab.dataset.bound = '1';
+  tab.addEventListener('click', () => {
+    const layout = tab.closest('.main-layout');
+    if (!layout) return;
+    layout.classList.remove('controls-hidden');
+    const hideBtn = layout.querySelector('.control-hide-btn');
+    if (hideBtn) {
+      hideBtn.title = 'Hide controls';
+      hideBtn.setAttribute('aria-label', 'Hide controls');
+    }
+  });
+});
 
 function updatePromptChips() {
   const caps = getModelCaps(state.model);
@@ -1528,6 +1791,10 @@ function addReferenceFiles(files) {
 if (referenceAddBtn) {
   referenceAddBtn.addEventListener('click', () => {
     if (referenceAddBtn.classList.contains('disabled')) return;
+    if (imagePickerModal) {
+      openImagePicker('reference');
+      return;
+    }
     referenceInput?.click();
   });
 }
@@ -1536,6 +1803,9 @@ if (referenceInput) {
   referenceInput.addEventListener('change', () => {
     if (referenceInput.files?.length) addReferenceFiles(referenceInput.files);
     referenceInput.value = '';
+    if (imagePickerModal && !imagePickerModal.classList.contains('hidden')) {
+      closeImagePicker();
+    }
   });
 }
 
@@ -1717,29 +1987,108 @@ document.addEventListener('click', e => {
   referenceMentionContext = null;
 });
 
+// ── Image Picker Modal ───────────────────────────────────────
+if (imagePickerClose) {
+  imagePickerClose.addEventListener('click', () => closeImagePicker());
+}
+if (imagePickerModal) {
+  imagePickerModal.addEventListener('click', e => {
+    if (e.target === imagePickerModal) closeImagePicker();
+  });
+}
+if (imagePickerUpload) {
+  imagePickerUpload.addEventListener('click', () => {
+    if (imagePickerTarget === 'reference') {
+      referenceInput?.click();
+      return;
+    }
+    if (imagePickerTarget === 'last') {
+      lastFrameInput?.click();
+      return;
+    }
+    firstFrameInput?.click();
+  });
+}
+if (imagePickerRefresh) {
+  imagePickerRefresh.addEventListener('click', async () => {
+    imagePickerRecords = await loadImagePickerRecords();
+    renderImagePickerGrid();
+  });
+}
+if (imagePickerAdd) {
+  imagePickerAdd.addEventListener('click', async () => {
+    if (!imagePickerSelection.size) return;
+    const ids = imagePickerSelectionOrder.length ? imagePickerSelectionOrder : Array.from(imagePickerSelection);
+    const selected = ids.map(id => imagePickerRecords.find(r => r.id === id)).filter(Boolean);
+    if (!selected.length) return;
+    if (imagePickerTarget === 'reference') {
+      const remaining = Math.max(0, MAX_REFERENCE_IMAGES - state.referenceImages.length);
+      const slice = selected.slice(0, remaining);
+      for (const record of slice) {
+        const dataUrl = await fetchImageDataUrlFromRecord(record);
+        if (!dataUrl) continue;
+        addReferenceImageDataUrl(dataUrl, record.prompt || record.id);
+      }
+      renderReferenceDeck();
+      setMode('reference');
+      updateJsonPreview();
+      handleReferenceMention();
+      closeImagePicker();
+      return;
+    }
+    const record = selected[0];
+    const dataUrl = await fetchImageDataUrlFromRecord(record);
+    if (!dataUrl) {
+      showToast('Could not load image data', 'error', '❌');
+      return;
+    }
+    if (imagePickerTarget === 'last') {
+      setFrameFromDataUrl(dataUrl, 'last');
+    } else {
+      setFrameFromDataUrl(dataUrl, 'first');
+    }
+    updateJsonPreview();
+    closeImagePicker();
+  });
+}
+
 // ── First/Last Frame Controls ─────────────────────────────────
 if (firstFrameBtn && firstFrameInput) {
   firstFrameBtn.addEventListener('click', e => {
     if (firstFrameBtn.classList.contains('disabled')) return;
     if (firstFrameRemove && firstFrameRemove.contains(e.target)) return;
+    if (imagePickerModal) {
+      openImagePicker('first');
+      return;
+    }
     firstFrameInput.click();
   });
   firstFrameInput.addEventListener('change', () => {
     const file = firstFrameInput.files?.[0];
     if (file) loadFrameFile(file, 'first');
     firstFrameInput.value = '';
+    if (imagePickerModal && !imagePickerModal.classList.contains('hidden')) {
+      closeImagePicker();
+    }
   });
 }
 if (lastFrameBtn && lastFrameInput) {
   lastFrameBtn.addEventListener('click', e => {
     if (lastFrameBtn.classList.contains('disabled')) return;
     if (lastFrameRemove && lastFrameRemove.contains(e.target)) return;
+    if (imagePickerModal) {
+      openImagePicker('last');
+      return;
+    }
     lastFrameInput.click();
   });
   lastFrameInput.addEventListener('change', () => {
     const file = lastFrameInput.files?.[0];
     if (file) loadFrameFile(file, 'last');
     lastFrameInput.value = '';
+    if (imagePickerModal && !imagePickerModal.classList.contains('hidden')) {
+      closeImagePicker();
+    }
   });
 }
 
@@ -1952,7 +2301,6 @@ function applyJobToForm(job) {
   if (job.resolution) state.resolution = job.resolution;
   if (job.serviceTier) state.serviceTier = job.serviceTier;
   if (job.generateAudio != null) state.generateAudio = !!job.generateAudio;
-  state.watermark = false;
   if (job.returnLastFrame != null) state.returnLastFrame = !!job.returnLastFrame;
   if (job.cameraFixed != null) state.cameraFixed = !!job.cameraFixed;
   if (job.seed !== undefined) state.seed = job.seed ?? null;
@@ -2072,7 +2420,6 @@ function buildPayload() {
     ratio: state.ratio,
     duration: state.duration,
     generate_audio: state.generateAudio,
-    watermark: false,
   };
 }
 
@@ -2121,7 +2468,6 @@ async function handleGenerate() {
     returnLastFrame: state.returnLastFrame,
     serviceTier: state.serviceTier,
     generateAudio: state.generateAudio,
-    watermark: false,
     cameraFixed: state.cameraFixed,
     seed: state.seed,
     mode: state.mode,
@@ -2245,7 +2591,6 @@ function createPlaceholderJob(jobConfig) {
     lastFrameDataUrl: jobConfig.lastFrameDataUrl,
     referenceImages: jobConfig.referenceImages || [],
     generateAudio: jobConfig.generateAudio,
-    watermark: false,
     tokensEstimate: jobConfig.tokensEstimate ?? null,
     lastFrameUrl: jobConfig.lastFrameUrl || null,
     cameraFixed: !!jobConfig.cameraFixed,
@@ -2282,7 +2627,6 @@ async function submitGeneration(jobConfig, { focusOnError = false, skipValidatio
     if (jobConfig.cameraFixed) body.camera_fixed = true;
     if (jobConfig.seed != null) body.seed = jobConfig.seed;
   }
-  body.watermark = false;
   if (jobConfig.draft) {
     body.draft = true;
     body.resolution = '480p';
@@ -2360,7 +2704,6 @@ async function submitGeneration(jobConfig, { focusOnError = false, skipValidatio
     lastFrameDataUrl: jobConfig.lastFrameDataUrl,
     referenceImages: jobConfig.referenceImages || [],
     generateAudio: jobConfig.generateAudio,
-    watermark: false,
     tokensEstimate: jobConfig.tokensEstimate ?? null,
     lastFrameUrl: jobConfig.lastFrameUrl || null,
     cameraFixed: !!jobConfig.cameraFixed,
@@ -2408,7 +2751,6 @@ function buildFallbackJob(taskId, status, videoUrl) {
     lastFrameDataUrl: state.lastFrameDataUrl,
     referenceImages: state.referenceImages || [],
     generateAudio: state.generateAudio,
-    watermark: false,
     cameraFixed: state.cameraFixed,
     seed: state.seed,
   };
@@ -2815,7 +3157,6 @@ function makeOfficialFromJob(job) {
     returnLastFrame: state.returnLastFrame,
     serviceTier: state.serviceTier,
     generateAudio: job.generateAudio ?? state.generateAudio,
-    watermark: false,
     mode: 'draft_task',
     draftTaskId: job.id,
     draft: false,

@@ -85,6 +85,8 @@ async function ensureFfmpeg({ allowDownload }) {
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 const ARK_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3';
+const OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/generations';
+const SONAUTO_BASE_URL = 'https://api.sonauto.ai/v1';
 
 function sendJson(res, status, payload) {
   const body = Buffer.from(JSON.stringify(payload));
@@ -144,6 +146,66 @@ function proxyRequest(req, res, url) {
 function proxyArk(req, res, parsed) {
   const tail = parsed.pathname.replace(/^\/api\/ark/, '');
   const targetUrl = new URL(ARK_BASE_URL + (tail.startsWith('/') ? tail : `/${tail}`));
+  parsed.searchParams.forEach((value, key) => {
+    targetUrl.searchParams.append(key, value);
+  });
+
+  const headers = {
+    'User-Agent': USER_AGENT,
+    'Accept': req.headers.accept || 'application/json',
+    'Accept-Encoding': 'identity',
+  };
+  if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
+  if (req.headers.authorization) headers.Authorization = req.headers.authorization;
+
+  const upstream = https.request(targetUrl, { method: req.method, headers }, upstreamRes => {
+    res.statusCode = upstreamRes.statusCode || 502;
+    const passHeaders = ['content-type'];
+    passHeaders.forEach(h => {
+      if (upstreamRes.headers[h]) res.setHeader(h, upstreamRes.headers[h]);
+    });
+    upstreamRes.pipe(res);
+  });
+  upstream.on('error', err => {
+    sendJson(res, 502, { error: 'proxy_failed', message: err.message });
+  });
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    upstream.end();
+  } else {
+    req.pipe(upstream);
+  }
+}
+
+function proxyOpenAiImages(req, res) {
+  const headers = {
+    'User-Agent': USER_AGENT,
+    'Accept': req.headers.accept || 'application/json',
+    'Accept-Encoding': 'identity',
+    'Content-Type': req.headers['content-type'] || 'application/json',
+  };
+  if (req.headers.authorization) headers.Authorization = req.headers.authorization;
+
+  const upstream = https.request(OPENAI_IMAGE_URL, { method: req.method, headers }, upstreamRes => {
+    res.statusCode = upstreamRes.statusCode || 502;
+    const passHeaders = ['content-type'];
+    passHeaders.forEach(h => {
+      if (upstreamRes.headers[h]) res.setHeader(h, upstreamRes.headers[h]);
+    });
+    upstreamRes.pipe(res);
+  });
+  upstream.on('error', err => {
+    sendJson(res, 502, { error: 'proxy_failed', message: err.message });
+  });
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    upstream.end();
+  } else {
+    req.pipe(upstream);
+  }
+}
+
+function proxySonauto(req, res, parsed) {
+  const tail = parsed.pathname.replace(/^\/api\/sonauto/, '');
+  const targetUrl = new URL(SONAUTO_BASE_URL + (tail.startsWith('/') ? tail : `/${tail}`));
   parsed.searchParams.forEach((value, key) => {
     targetUrl.searchParams.append(key, value);
   });
@@ -380,6 +442,16 @@ async function startServer() {
       return;
     }
 
+    if (parsed.pathname.startsWith('/api/sonauto/')) {
+      if (method !== 'GET' && method !== 'POST' && method !== 'DELETE') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      proxySonauto(req, res, parsed);
+      return;
+    }
+
     if (parsed.pathname === '/api/export') {
       if (method !== 'POST') {
         res.statusCode = 405;
@@ -389,6 +461,16 @@ async function startServer() {
       handleExportRequest(req, res).catch(err => {
         sendJson(res, 502, { error: 'ffmpeg_failed', message: err.message });
       });
+      return;
+    }
+
+    if (parsed.pathname === '/api/openai/images') {
+      if (method !== 'POST') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      proxyOpenAiImages(req, res);
       return;
     }
 
