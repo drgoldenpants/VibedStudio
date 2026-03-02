@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vibed Studio</title>
+    <title>Seedance Vibed Studio</title>
     <link rel="icon" type="image/svg+xml"
         href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 120'%3E%3Cpolygon points='12,14 46,4 46,106 12,116' fill='%232f5aa8'/%3E%3Cpolygon points='58,38 86,28 86,94 58,104' fill='%234a8cff'/%3E%3Cpolygon points='102,30 126,22 126,90 102,98' fill='%2318b6c2'/%3E%3Cpolygon points='134,12 158,4 158,106 134,116' fill='%237fe9db'/%3E%3C/svg%3E" />
     <meta name="description" content="Generate and edit AI videos using BytePlus VibedStudio." />
@@ -35,7 +35,7 @@
                         <polygon points="134,12 158,4 158,106 134,116" fill="#7fe9db" />
                     </svg>
                 </div>
-                <span class="logo-text">VIBED <span class="logo-sub">Studio</span></span>
+                <span class="logo-text">SEEDANCE VIBED <span class="logo-sub">Studio</span></span>
             </div>
             <nav class="app-tabs">
                 <button class="app-tab" data-tab="images">
@@ -66,10 +66,14 @@
             </nav>
 
             <div class="header-right">
+                <button class="header-btn" id="header-save-project">Save Project</button>
+                <button class="header-btn" id="header-load-project">Load Project</button>
+
                 <button class="server-help-btn hidden" id="server-help-btn" title="Server mode required">
                     Server Mode
                 </button>
 
+              
                 <!-- Compact API key widget -->
                 <div class="hak-widget" id="hak-widget">
                     <div class="hak-tooltip" id="hak-tooltip">
@@ -232,15 +236,6 @@
                                 </div>
                                 <label class="toggle" for="gen-audio">
                                     <input type="checkbox" id="gen-audio" checked /><span class="track"></span>
-                                </label>
-                            </div>
-                            <div class="toggle-item">
-                                <div class="toggle-info">
-                                    <span class="toggle-label">Watermark</span>
-                                    <span class="toggle-desc">Add BytePlus watermark</span>
-                                </div>
-                                <label class="toggle" for="watermark">
-                                    <input type="checkbox" id="watermark" /><span class="track"></span>
                                 </label>
                             </div>
                         </div>
@@ -597,26 +592,61 @@
                     <div class="editor-top">
                             <div class="preview-area">
                                 <div class="preview-wrapper">
-                                    <video id="preview-video" playsinline></video>
-                                    <img id="preview-image" alt="Image preview" />
-                                    <div class="preview-empty" id="preview-empty">
-                                    <svg viewBox="0 0 48 48" fill="none">
-                                        <rect x="4" y="8" width="40" height="30" rx="3" stroke="currentColor"
-                                            stroke-width="2" opacity="0.4" />
-                                        <polygon points="19,17 19,31 33,24" fill="currentColor" opacity="0.25" />
-                                    </svg>
-                                    Drag clips to the timeline to get started
+                                    <button class="preview-help" id="preview-help" aria-label="Preview controls">?</button>
+                                    <div class="preview-help-tip" id="preview-help-tip">
+                                        Drag to move • Shift+drag to scale • Double-click to reset
+                                    </div>
+
+                                    <div class="preview-stage" id="preview-stage">
+                                        <div class="preview-guides">
+                                            <div class="preview-guide v q1" id="preview-guide-v-q1"></div>
+                                            <div class="preview-guide v q3" id="preview-guide-v-q3"></div>
+                                            <div class="preview-guide h q1" id="preview-guide-h-q1"></div>
+                                            <div class="preview-guide h q3" id="preview-guide-h-q3"></div>
+                                            <div class="preview-guide v left" id="preview-guide-left"></div>
+                                            <div class="preview-guide v right" id="preview-guide-right"></div>
+                                            <div class="preview-guide h top" id="preview-guide-top"></div>
+                                            <div class="preview-guide h bottom" id="preview-guide-bottom"></div>
+                                            <div class="preview-guide v" id="preview-guide-v"></div>
+                                            <div class="preview-guide h" id="preview-guide-h"></div>
+                                        </div>
+                                        <div class="preview-layers" id="preview-layers"></div>
+                                        <div class="preview-empty" id="preview-empty">
+                                        <svg viewBox="0 0 48 48" fill="none">
+                                            <rect x="4" y="8" width="40" height="30" rx="3" stroke="currentColor"
+                                                stroke-width="2" opacity="0.4" />
+                                            <polygon points="19,17 19,31 33,24" fill="currentColor" opacity="0.25" />
+                                        </svg>
+                                        Drag clips to the timeline to get started
+                                    </div>
+                                    </div>
                                 </div>
-                            </div>
                             <div class="preview-timebar">
                                 <span class="preview-t" id="preview-cur">0:00</span>
                                 <span class="preview-sep">/</span>
                                 <span class="preview-t" id="preview-dur">1:00</span>
+                                <span class="preview-spacer"></span>
+                                <label class="preview-ratio-label" for="preview-ratio-select">Ratio</label>
+                                <select id="preview-ratio-select" class="preview-ratio-select">
+                                    <option value="16:9">16:9</option>
+                                    <option value="4:3">4:3</option>
+                                    <option value="1:1">1:1</option>
+                                    <option value="3:4">3:4</option>
+                                    <option value="9:16">9:16</option>
+                                    <option value="21:9">21:9</option>
+                                </select>
                             </div>
                         </div>
                         <div class="editor-toolbar">
-                            <div class="editor-toolbar-title">Tracks</div>
-                            <button class="tool-btn" id="tool-add-video-track">
+                            <div class="toolbar-tabs">
+                                <button class="toolbar-tab active" data-toolbar-tab="track">Track</button>
+                                <button class="toolbar-tab" data-toolbar-tab="effects">Effects</button>
+                                <button class="toolbar-tab" data-toolbar-tab="text">Text</button>
+                            </div>
+
+                            <div class="toolbar-panel" data-toolbar-panel="track">
+                                <div class="editor-toolbar-title">Tracks</div>
+                                <button class="tool-btn" id="tool-add-video-track">
                                 <svg viewBox="0 0 24 24" fill="none">
                                     <rect x="2" y="9" width="20" height="6" rx="2" stroke="currentColor"
                                         stroke-width="1.5" />
@@ -624,8 +654,8 @@
                                         stroke-linecap="round" />
                                 </svg>
                                 Add Video Track
-                            </button>
-                            <button class="tool-btn" id="tool-add-audio-track">
+                                </button>
+                                <button class="tool-btn" id="tool-add-audio-track">
                                 <svg viewBox="0 0 24 24" fill="none">
                                     <rect x="2" y="9" width="20" height="6" rx="2" stroke="currentColor"
                                         stroke-width="1.5" />
@@ -633,53 +663,43 @@
                                         stroke-linecap="round" />
                                 </svg>
                                 Add Audio Track
-                            </button>
-                            <div class="tool-spacer"></div>
-                            <button class="tool-btn" id="tool-load-test">
-                                <svg viewBox="0 0 24 24" fill="none">
-                                    <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5" />
-                                    <path d="M12 8v4l3 3" stroke="currentColor" stroke-width="1.5"
-                                        stroke-linecap="round" />
-                                </svg>
-                                Load Test Media
-                            </button>
-                            <button class="tool-btn" id="tool-save-project">
-                                <svg viewBox="0 0 24 24" fill="none">
-                                    <path d="M5 3H16L20 7V21H5V3Z" stroke="currentColor" stroke-width="1.5" />
-                                    <path d="M7 3V9H15V3" stroke="currentColor" stroke-width="1.5" />
-                                    <rect x="7" y="13" width="10" height="6" rx="1.5" stroke="currentColor"
-                                        stroke-width="1.5" />
-                                </svg>
-                                Save Project
-                            </button>
-                            <button class="tool-btn" id="tool-load-project">
-                                <svg viewBox="0 0 24 24" fill="none">
-                                    <path d="M5 3H16L20 7V21H5V3Z" stroke="currentColor" stroke-width="1.5" />
-                                    <path d="M12 15V9M12 9L9 12M12 9L15 12" stroke="currentColor" stroke-width="1.5"
-                                        stroke-linecap="round" stroke-linejoin="round" />
-                                </svg>
-                                Load Project
-                            </button>
-                            <input type="file" id="project-file-input" accept="application/json" hidden />
-                            <select class="tool-select" id="export-format" title="Export format">
+                                </button>
+                                <div class="tool-spacer"></div>
+                                <input type="file" id="project-file-input" accept=".svs,application/json" hidden />
+                                <select class="tool-select" id="export-format" title="Export format">
                                 <option value="webm">Export WebM</option>
                                 <option value="mp4">Export MP4 (server)</option>
-                            </select>
-                            <button class="tool-btn success" id="tool-export">
+                                </select>
+                                <button class="tool-btn success" id="tool-export">
                                 <svg viewBox="0 0 24 24" fill="none">
                                     <path d="M12 2V17M12 17L7 12M12 17L17 12" stroke="currentColor" stroke-width="2"
                                         stroke-linecap="round" stroke-linejoin="round" />
                                     <path d="M3 20H21" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
                                 </svg>
                                 Export
-                            </button>
-                            <button class="tool-btn danger" id="tool-clear-timeline">
+                                </button>
+                                <button class="tool-btn danger" id="tool-clear-timeline">
                                 <svg viewBox="0 0 24 24" fill="none">
                                     <path d="M3 6H21M8 6V4H16V6M19 6L18 20H6L5 6" stroke="currentColor"
                                         stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                                 </svg>
                                 Clear All
-                            </button>
+                                </button>
+                            </div>
+
+                            <div class="toolbar-panel hidden" data-toolbar-panel="effects">
+                                <div class="editor-toolbar-title">Effects</div>
+                                <div class="media-list effect-items" id="effect-items">
+                                    <div class="media-empty-hint">Loading effects…</div>
+                                </div>
+                            </div>
+
+                            <div class="toolbar-panel hidden" data-toolbar-panel="text">
+                                <div class="editor-toolbar-title">Text</div>
+                                <div class="media-list text-items" id="text-items">
+                                    <div class="media-empty-hint">Add a text overlay to get started</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 

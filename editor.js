@@ -32,11 +32,18 @@ const editorState = {
     segmentMenuEl: null,
     exportCanvas: null,
     exportCtx: null,
-    previewType: null,
     previewOpacity: 1,
     playheadMenuEl: null,
     generatedPage: 1,
     generatedPerPage: 12,
+    previewRatio: '16:9',
+    previewSegId: null,
+    previewDrag: null,
+    prefetchedSegs: new Set(),
+    clipboardSeg: null,
+    clipboardTrackId: null,
+    effectLibraryReady: false,
+    textPresetsReady: false,
 };
 
 let editorInited = false;
@@ -45,6 +52,250 @@ const TRANSITION_DUR = 0.5;
 
 // ── DOM helpers ───────────────────────────────────────────────
 const eq = id => document.getElementById(id);
+const previewGuideV = eq('preview-guide-v');
+const previewGuideH = eq('preview-guide-h');
+const previewGuideVQ1 = eq('preview-guide-v-q1');
+const previewGuideVQ3 = eq('preview-guide-v-q3');
+const previewGuideHQ1 = eq('preview-guide-h-q1');
+const previewGuideHQ3 = eq('preview-guide-h-q3');
+const previewGuideLeft = eq('preview-guide-left');
+const previewGuideRight = eq('preview-guide-right');
+const previewGuideTop = eq('preview-guide-top');
+const previewGuideBottom = eq('preview-guide-bottom');
+
+function ensureMediaDimensions(media) {
+    if (!media || media._dimPending || (media.width && media.height)) return;
+    media._dimPending = true;
+    if (media.type === 'image') {
+        const img = new Image();
+        img.onload = () => {
+            media.width = img.naturalWidth || 0;
+            media.height = img.naturalHeight || 0;
+            media._dimPending = false;
+        };
+        img.onerror = () => { media._dimPending = false; };
+        img.src = media.src || '';
+        return;
+    }
+    if (media.type === 'video') {
+        const v = document.createElement('video');
+        v.preload = 'metadata';
+        v.muted = true;
+        v.playsInline = true;
+        v.onloadedmetadata = () => {
+            media.width = v.videoWidth || 0;
+            media.height = v.videoHeight || 0;
+            media._dimPending = false;
+            v.src = '';
+        };
+        v.onerror = () => { media._dimPending = false; };
+        v.src = media.src || '';
+    }
+}
+
+function initToolbarTabs() {
+    const tabs = document.querySelectorAll('.toolbar-tab[data-toolbar-tab]');
+    const panels = document.querySelectorAll('.toolbar-panel[data-toolbar-panel]');
+    if (!tabs.length || !panels.length) return;
+    tabs.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const key = btn.dataset.toolbarTab;
+            tabs.forEach(t => t.classList.toggle('active', t === btn));
+            panels.forEach(p => p.classList.toggle('hidden', p.dataset.toolbarPanel !== key));
+        });
+    });
+}
+
+function bindHeaderProjectButtons() {
+    const headerSave = eq('header-save-project');
+    const headerLoad = eq('header-load-project');
+    if (headerSave && !headerSave.dataset.bound) {
+        headerSave.dataset.bound = '1';
+        headerSave.addEventListener('click', () => {
+            saveProject();
+        });
+    }
+    if (headerLoad && !headerLoad.dataset.bound) {
+        headerLoad.dataset.bound = '1';
+        headerLoad.addEventListener('click', () => triggerProjectLoad());
+    }
+}
+
+function createTextMediaItem(overrides = {}) {
+    const id = overrides.id || `text-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+    const item = {
+        id,
+        name: overrides.name || 'Text Overlay',
+        type: 'text',
+        duration: overrides.duration || 4,
+        text: overrides.text || 'Add your text',
+        fontFamily: overrides.fontFamily || 'Arial',
+        fontSize: overrides.fontSize || 48,
+        fontWeight: overrides.fontWeight || 600,
+        fontStyle: overrides.fontStyle || 'normal',
+        color: overrides.color || '#ffffff',
+        align: overrides.align || 'center',
+        bgColor: overrides.bgColor ?? 'transparent',
+        padding: overrides.padding ?? 8,
+        lineHeight: overrides.lineHeight || 1.1,
+        letterSpacing: overrides.letterSpacing || 0,
+        underline: overrides.underline || false,
+        boxW: overrides.boxW ?? null,
+        boxH: overrides.boxH ?? null,
+    };
+    if (overrides.source) item.source = overrides.source;
+    if (overrides.presetKey) item.presetKey = overrides.presetKey;
+    return item;
+}
+
+function ensureEffectLibrary() {
+    if (editorState.effectLibraryReady) return;
+    const existing = editorState.mediaItems.some(m => m.type === 'effect');
+    if (!existing) {
+        const presets = [
+            { name: 'Zoom Punch', key: 'zoom-punch', duration: 2.0 },
+            { name: 'Glitch', key: 'glitch', duration: 1.5 },
+            { name: 'VHS', key: 'vhs', duration: 3.0 },
+            { name: 'Blur In', key: 'blur-in', duration: 1.2 },
+        ];
+        presets.forEach(p => {
+            editorState.mediaItems.push({
+                id: `fx-${p.key}`,
+                name: p.name,
+                type: 'effect',
+                duration: p.duration,
+                source: 'effect',
+                effectKey: p.key,
+            });
+        });
+    }
+    editorState.effectLibraryReady = true;
+}
+
+function ensureTextPresets() {
+    if (editorState.textPresetsReady) return;
+    const hasOverlay = editorState.mediaItems.some(m => m.id === 'text-preset-overlay');
+    const hasTitle = editorState.mediaItems.some(m => m.id === 'text-preset-title');
+    if (!hasOverlay) {
+        editorState.mediaItems.push(createTextMediaItem({
+            id: 'text-preset-overlay',
+            name: 'Text Overlay',
+            text: 'Add your text',
+            duration: 4,
+            source: 'text-preset',
+            presetKey: 'overlay',
+        }));
+    }
+    if (!hasTitle) {
+        editorState.mediaItems.push(createTextMediaItem({
+            id: 'text-preset-title',
+            name: 'Title',
+            text: 'Title',
+            duration: 4,
+            fontSize: 72,
+            fontWeight: 700,
+            bgColor: '#000000',
+            padding: 0,
+            source: 'text-preset',
+            presetKey: 'title',
+        }));
+    }
+    editorState.textPresetsReady = true;
+}
+
+function renderEffectItems() {
+    const container = eq('effect-items');
+    if (!container) return;
+    const items = editorState.mediaItems.filter(m => m.type === 'effect');
+    container.innerHTML = items.length
+        ? items.map(m => mediaItemHTML(m, { compact: false })).join('')
+        : '<div class="media-empty-hint">No effects available</div>';
+}
+
+function renderTextItems() {
+    const container = eq('text-items');
+    if (!container) return;
+    ensureTextPresets();
+    const textIcon = `<svg viewBox="0 0 24 24" fill="none"><path d="M4 6H20M12 6V20M7 20H17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+    const items = editorState.mediaItems.filter(m => m.type === 'text' && m.source === 'text-preset');
+    container.innerHTML = items.map(m => `
+      <div class="media-item text-preset" data-mid="${m.id}">
+        <div class="media-icon">${textIcon}</div>
+        <div class="media-info">
+          <div class="media-name">${escH(m.name)}</div>
+          <div class="media-meta">TEXT • ${formatDur(m.duration || 0)}</div>
+        </div>
+      </div>`).join('');
+}
+
+function getTextStyle(seg) {
+    const isTitle = seg?.presetKey === 'title';
+    const bgColor = seg?.bgColor ?? (isTitle ? '#000000' : 'transparent');
+    return {
+        text: seg.text || 'Text',
+        fontFamily: seg.fontFamily || 'Arial',
+        fontSize: seg.fontSize || 48,
+        fontWeight: seg.fontWeight || 600,
+        fontStyle: seg.fontStyle || 'normal',
+        color: seg.color || '#ffffff',
+        align: seg.align || 'center',
+        bgColor,
+        padding: seg.padding ?? 8,
+        lineHeight: seg.lineHeight || 1.1,
+        letterSpacing: seg.letterSpacing || 0,
+        underline: !!seg.underline,
+        boxW: seg.boxW ?? null,
+        boxH: seg.boxH ?? null,
+    };
+}
+
+function resolveFontFamily(fontFamily) {
+    const rootStyle = getComputedStyle(document.documentElement);
+    const defaultFont = rootStyle.getPropertyValue('--font').trim() || 'sans-serif';
+    const monoFont = rootStyle.getPropertyValue('--font-mono').trim() || 'monospace';
+    if (!fontFamily) return defaultFont;
+    if (fontFamily.includes('var(--font-mono)')) return monoFont;
+    if (fontFamily.includes('var(--font)')) return defaultFont;
+    return fontFamily;
+}
+
+function applyTextLayerStyle(seg, el) {
+    if (!seg || !el) return;
+    const style = getTextStyle(seg);
+    const isTitle = seg.presetKey === 'title';
+    let contentEl = el.querySelector('.text-content');
+    if (!contentEl) {
+        contentEl = document.createElement('span');
+        contentEl.className = 'text-content';
+        el.appendChild(contentEl);
+    }
+    if (!el.querySelector('.text-resize-handle')) {
+        const handle = document.createElement('span');
+        handle.className = 'text-resize-handle br';
+        el.appendChild(handle);
+    }
+    contentEl.textContent = style.text;
+    el.style.fontFamily = style.fontFamily;
+    el.style.fontSize = `${style.fontSize}px`;
+    el.style.fontWeight = String(style.fontWeight);
+    el.style.fontStyle = style.fontStyle;
+    el.style.color = style.color;
+    el.style.textAlign = style.align;
+    el.style.background = style.bgColor;
+    el.style.padding = isTitle ? '0px' : `${style.padding}px`;
+    el.style.lineHeight = String(style.lineHeight);
+    el.style.letterSpacing = `${style.letterSpacing}px`;
+    el.style.width = isTitle ? '100%' : (style.boxW ? `${style.boxW}px` : 'auto');
+    el.style.height = isTitle ? '100%' : (style.boxH ? `${style.boxH}px` : 'auto');
+    el.style.maxWidth = isTitle ? '100%' : '';
+    el.style.display = isTitle ? 'flex' : '';
+    el.style.alignItems = isTitle ? 'center' : '';
+    el.style.justifyContent = isTitle ? 'center' : '';
+    const handleEl = el.querySelector('.text-resize-handle');
+    if (handleEl) handleEl.style.display = isTitle ? 'none' : '';
+    if (isTitle && seg.transform) seg.transform.scale = 1;
+    contentEl.style.textDecoration = style.underline ? 'underline' : 'none';
+}
 
 // ── Tab switching ─────────────────────────────────────────────
 document.querySelectorAll('.app-tab').forEach(btn => {
@@ -87,10 +338,29 @@ function initEditor() {
     eq('tl-zoom-out').addEventListener('click', () => setZoom(editorState.pxPerSec / 1.5));
     eq('tool-add-video-track').addEventListener('click', () => addTrack('video'));
     eq('tool-add-audio-track').addEventListener('click', () => addTrack('audio'));
-    eq('tool-clear-timeline').addEventListener('click', clearTimeline);
-    eq('tool-load-test').addEventListener('click', loadTestMedia);
-    eq('tool-save-project').addEventListener('click', saveProject);
-    eq('tool-load-project').addEventListener('click', () => eq('project-file-input').click());
+    eq('tool-clear-timeline')?.addEventListener('click', clearTimeline);
+    eq('tool-save-project')?.addEventListener('click', saveProject);
+    eq('tool-load-project')?.addEventListener('click', () => triggerProjectLoad());
+    bindHeaderProjectButtons();
+    const ratioSelect = eq('preview-ratio-select');
+    if (ratioSelect) {
+        const savedRatio = localStorage.getItem('vibedstudio_preview_ratio');
+        if (savedRatio) {
+            editorState.previewRatio = savedRatio;
+            ratioSelect.value = savedRatio;
+        }
+        ratioSelect.addEventListener('change', () => {
+            editorState.previewRatio = ratioSelect.value;
+            localStorage.setItem('vibedstudio_preview_ratio', editorState.previewRatio);
+            applyPreviewRatio();
+            const seg = getActivePreviewSegment();
+            if (seg) applyPreviewTransform(seg);
+        });
+        applyPreviewRatio();
+    }
+
+    initPreviewTransformControls();
+    initToolbarTabs();
     const exportFormatSel = eq('export-format');
     if (exportFormatSel) {
         const saved = localStorage.getItem('vibedstudio_export_format');
@@ -103,11 +373,7 @@ function initEditor() {
             localStorage.setItem('vibedstudio_export_format', editorState.exportFormat);
         });
     }
-    eq('project-file-input').addEventListener('change', e => {
-        const file = e.target.files?.[0];
-        if (file) loadProject(file);
-        e.target.value = '';
-    });
+    ensureProjectFileInputBound();
     eq('tool-export').addEventListener('click', startExport);
     eq('upload-video-btn').addEventListener('click', () => eq('upload-video-input').click());
     eq('upload-image-btn').addEventListener('click', () => eq('upload-image-input').click());
@@ -176,8 +442,558 @@ function initEditor() {
 
     renderTimeline();
     syncMediaLibrary();
+    ensureEffectLibrary();
+    renderEffectItems();
     setZoom(80, true);
     initTransitionContextDelegate();
+}
+
+function applyPreviewRatio() {
+    const stage = eq('preview-stage');
+    const wrap = stage?.parentElement;
+    if (!stage || !wrap) return;
+    const { value } = parseRatio(editorState.previewRatio || '16:9');
+    stage.style.setProperty('--preview-ratio', `${value}`);
+    const rect = wrap.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    let w = rect.width;
+    let h = rect.width / value;
+    if (h > rect.height) {
+        h = rect.height;
+        w = rect.height * value;
+    }
+    stage.style.width = `${w}px`;
+    stage.style.height = `${h}px`;
+    editorState.exportCanvas = null;
+    editorState.exportCtx = null;
+}
+
+function parseRatio(value) {
+    const [wRaw, hRaw] = String(value || '16:9').split(':');
+    const w = Math.max(1, Number(wRaw) || 16);
+    const h = Math.max(1, Number(hRaw) || 9);
+    return { w, h, value: w / h };
+}
+
+function getPreviewStageRect() {
+    const stage = eq('preview-stage');
+    if (!stage) return null;
+    return stage.getBoundingClientRect();
+}
+
+function getPreviewMediaSize(seg) {
+    if (!seg) return null;
+    if (seg._mediaW && seg._mediaH) return { w: seg._mediaW, h: seg._mediaH };
+    const media = seg.mediaId ? editorState.mediaItems.find(m => m.id === seg.mediaId) : null;
+    if (media?.width && media?.height) {
+        seg._mediaW = media.width;
+        seg._mediaH = media.height;
+        return { w: seg._mediaW, h: seg._mediaH };
+    }
+    const layers = eq('preview-layers');
+    const el = layers?.querySelector(`.preview-layer[data-seg-id="${seg.id}"]`);
+    if (!el) return null;
+    if (seg.mediaType === 'text') {
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+        if (!w || !h) return null;
+        seg._mediaW = w;
+        seg._mediaH = h;
+        return { w, h };
+    }
+    const isImage = seg.mediaType === 'image';
+    const w = isImage ? el.naturalWidth : el.videoWidth;
+    const h = isImage ? el.naturalHeight : el.videoHeight;
+    if (!w || !h) return null;
+    seg._mediaW = w;
+    seg._mediaH = h;
+    if (media) {
+        media.width = w;
+        media.height = h;
+    }
+    return { w, h };
+}
+
+function getPreviewContentMetrics(seg, stageRect, nx, ny, scaleOverride) {
+    const mediaSize = getPreviewMediaSize(seg);
+    if (!mediaSize || !stageRect) return null;
+    const baseScale = seg.mediaType === 'text'
+        ? 1
+        : Math.min(stageRect.width / mediaSize.w, stageRect.height / mediaSize.h);
+    const scale = baseScale * (scaleOverride ?? seg.transform?.scale ?? 1);
+    const dw = mediaSize.w * scale;
+    const dh = mediaSize.h * scale;
+    const left = (stageRect.width - dw) / 2 + nx * stageRect.width;
+    const right = left + dw;
+    const top = (stageRect.height - dh) / 2 + ny * stageRect.height;
+    const bottom = top + dh;
+    return { dw, dh, left, right, top, bottom };
+}
+
+function getSegmentTransform(seg) {
+    if (!seg) return { x: 0, y: 0, scale: 1 };
+    if (!seg.transform) seg.transform = { x: 0, y: 0, scale: 1 };
+    return seg.transform;
+}
+
+function applyPreviewTransform(seg) {
+    const stageRect = getPreviewStageRect();
+    if (!stageRect) return;
+    const layers = eq('preview-layers');
+    const target = layers?.querySelector(`.preview-layer[data-seg-id="${seg?.id}"]`);
+    if (!target) return;
+    const t = getSegmentTransform(seg);
+    const tx = t.x * stageRect.width;
+    const ty = t.y * stageRect.height;
+    if (seg?.mediaType === 'text') {
+        target.style.transform = `translate(-50%, -50%) translate(${tx}px, ${ty}px) scale(${t.scale})`;
+    } else {
+        target.style.transform = `translate(${tx}px, ${ty}px) scale(${t.scale})`;
+    }
+}
+
+function getActivePreviewSegment() {
+    const id = editorState.previewSegId;
+    if (!id) return null;
+    for (const track of editorState.tracks) {
+        const seg = track.segments.find(s => s.id === id);
+        if (seg) return seg;
+    }
+    return null;
+}
+
+function getActiveVideoSegmentsAtTime(t) {
+    const layers = [];
+    editorState.tracks.forEach((track, trackIndex) => {
+        if (track.type !== 'video' && track.type !== 'text') return;
+        track.segments.forEach(seg => {
+            if (seg.mediaType !== 'video' && seg.mediaType !== 'image' && seg.mediaType !== 'text') return;
+            if (t < seg.start || t >= seg.start + seg.duration) return;
+            layers.push({ seg, trackIndex });
+        });
+    });
+    return layers;
+}
+
+function getActiveEffectSegmentsAtTime(t) {
+    const active = [];
+    editorState.tracks.forEach(track => {
+        if (track.type !== 'effect') return;
+        track.segments.forEach(seg => {
+            if (seg.mediaType !== 'effect') return;
+            if (t < seg.start || t >= seg.start + seg.duration) return;
+            active.push(seg);
+        });
+    });
+    return active;
+}
+
+function updatePreviewEffects(t) {
+    const stage = eq('preview-stage');
+    if (!stage) return;
+    const classes = ['effect-zoom-punch', 'effect-glitch', 'effect-vhs', 'effect-blur-in'];
+    classes.forEach(c => stage.classList.remove(c));
+    const active = getActiveEffectSegmentsAtTime(t);
+    if (!active.length) return;
+    active.forEach(seg => {
+        const key = seg.effectKey || '';
+        if (key === 'zoom-punch') stage.classList.add('effect-zoom-punch');
+        if (key === 'glitch') stage.classList.add('effect-glitch');
+        if (key === 'vhs') stage.classList.add('effect-vhs');
+        if (key === 'blur-in') stage.classList.add('effect-blur-in');
+    });
+}
+
+function updatePreviewSelection() {
+    document.querySelectorAll('.preview-layer').forEach(el => {
+        const segId = el.dataset.segId;
+        const isSelected = segId === editorState.previewSegId || segId === editorState.selectedSegId;
+        el.classList.toggle('selected', isSelected);
+    });
+}
+
+function renderPreviewLayers(layers, t) {
+    const container = eq('preview-layers');
+    if (!container) return;
+    const activeIds = new Set();
+    layers.forEach(layer => {
+        const seg = layer.seg;
+        const isVideo = seg.mediaType === 'video';
+        const isText = seg.mediaType === 'text';
+        let el = container.querySelector(`.preview-layer[data-seg-id="${seg.id}"]`);
+        if (!el) {
+            el = document.createElement(isText ? 'div' : isVideo ? 'video' : 'img');
+            el.className = `preview-layer ${isText ? 'preview-layer-text' : isVideo ? 'preview-layer-video' : 'preview-layer-image'}`;
+            el.dataset.segId = seg.id;
+            el.draggable = false;
+            el.addEventListener('dragstart', e => e.preventDefault());
+            if (isVideo) {
+                el.muted = true;
+                el.playsInline = true;
+                el.preload = 'auto';
+                if (!el.dataset.metaHooked) {
+                    el.dataset.metaHooked = '1';
+                    el.addEventListener('loadedmetadata', () => {
+                        if (el.videoWidth && el.videoHeight) {
+                            seg._mediaW = el.videoWidth;
+                            seg._mediaH = el.videoHeight;
+                        }
+                    });
+                }
+                el.addEventListener('error', async () => {
+                    if (el.dataset.errorHandled === '1') return;
+                    el.dataset.errorHandled = '1';
+                    const mediaId = seg.mediaId;
+                    if (mediaId && window.refreshJobVideoUrl) {
+                        const fresh = await window.refreshJobVideoUrl(mediaId, { silent: true });
+                        if (fresh) {
+                            const proxy = maybeProxySrc(fresh) || fresh;
+                            el.dataset.src = proxy;
+                            el.src = proxy;
+                            try { el.load(); } catch { }
+                            return;
+                        }
+                    }
+                    if (mediaId) {
+                        await removeMediaIfForbidden(mediaId, el.currentSrc || el.src);
+                    }
+                });
+            } else if (isText) {
+                applyTextLayerStyle(seg, el);
+                if (!el.dataset.textBound) {
+                    el.dataset.textBound = '1';
+                    el.addEventListener('contextmenu', e => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        showTextStyleMenu(e.clientX, e.clientY, seg);
+                    });
+                }
+            }
+            container.appendChild(el);
+        }
+
+        if (!isVideo && !isText && !el.dataset.metaHooked) {
+            el.dataset.metaHooked = '1';
+            el.addEventListener('load', () => {
+                if (el.naturalWidth && el.naturalHeight) {
+                    seg._mediaW = el.naturalWidth;
+                    seg._mediaH = el.naturalHeight;
+                }
+            });
+        }
+
+        activeIds.add(seg.id);
+        el.classList.toggle('selected', seg.id === editorState.previewSegId || seg.id === editorState.selectedSegId);
+        el.style.zIndex = String(1000 - layer.trackIndex);
+        el.style.opacity = String(getTransitionOpacity(seg, t));
+
+        const src = seg.src ? (maybeProxySrc(seg.src) || seg.src) : '';
+        if (!isText && src && el.dataset.src !== src) {
+            el.dataset.src = src;
+            el.src = src;
+        }
+
+        const media = seg.mediaId ? editorState.mediaItems.find(m => m.id === seg.mediaId) : null;
+        if (isVideo) {
+            if (el.videoWidth && el.videoHeight) {
+                seg._mediaW = el.videoWidth;
+                seg._mediaH = el.videoHeight;
+                if (media) {
+                    media.width = el.videoWidth;
+                    media.height = el.videoHeight;
+                }
+            }
+        } else if (!isText && el.complete && el.naturalWidth && el.naturalHeight) {
+            seg._mediaW = el.naturalWidth;
+            seg._mediaH = el.naturalHeight;
+            if (media) {
+                media.width = el.naturalWidth;
+                media.height = el.naturalHeight;
+            }
+        }
+
+        if (isText) {
+            if (el.dataset.editing !== '1') {
+                applyTextLayerStyle(seg, el);
+                if (el.offsetWidth && el.offsetHeight) {
+                    seg._mediaW = el.offsetWidth;
+                    seg._mediaH = el.offsetHeight;
+                }
+            }
+        }
+
+        if (isVideo) {
+            const segTime = Math.max(0, t - seg.start);
+            if (!Number.isNaN(segTime) && Math.abs(el.currentTime - segTime) > 0.35) {
+                try { el.currentTime = segTime; } catch { }
+            }
+            if (editorState.playing) {
+                if (el.paused) el.play().catch(() => { });
+            } else if (!el.paused) {
+                el.pause();
+            }
+        }
+
+        applyPreviewTransform(seg);
+    });
+
+    container.querySelectorAll('.preview-layer').forEach(el => {
+        if (!activeIds.has(el.dataset.segId)) el.remove();
+    });
+}
+
+function clearPreviewLayers() {
+    const container = eq('preview-layers');
+    if (!container) return;
+    container.querySelectorAll('.preview-layer').forEach(el => el.remove());
+}
+
+function initPreviewTransformControls() {
+    const stage = eq('preview-stage');
+    if (!stage) return;
+    stage.addEventListener('pointerdown', e => {
+        const hit = document.elementsFromPoint(e.clientX, e.clientY)
+            .find(el => el.classList?.contains('preview-layer'));
+        const isHandle = !!e.target.closest('.text-resize-handle');
+        if (hit?.classList?.contains('preview-layer-text') && hit.dataset.editing === '1' && !isHandle) {
+            return;
+        }
+        const active = getActiveVideoSegmentsAtTime(editorState.currentTime || 0);
+        const selectedActive = active.find(l => l.seg.id === editorState.selectedSegId);
+        const targetId = hit?.dataset?.segId || selectedActive?.seg.id;
+        if (targetId) {
+            editorState.previewSegId = targetId;
+            editorState.selectedSegId = targetId;
+            document.querySelectorAll('.tl-segment').forEach(s => {
+                s.classList.toggle('selected', s.dataset.segId === targetId);
+            });
+            updatePreviewSelection();
+        }
+        const seg = getActivePreviewSegment();
+        if (!seg || (seg.mediaType !== 'video' && seg.mediaType !== 'image' && seg.mediaType !== 'text')) return;
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const rect = stage.getBoundingClientRect();
+        const t = getSegmentTransform(seg);
+        const isTitleText = seg.mediaType === 'text' && seg.presetKey === 'title';
+        editorState.previewDrag = {
+            id: seg.id,
+            mode: isTitleText ? 'move' : (isHandle ? 'resize-text' : (e.shiftKey ? 'scale' : 'move')),
+            startX: e.clientX,
+            startY: e.clientY,
+            baseX: t.x,
+            baseY: t.y,
+            baseScale: t.scale,
+            baseBoxW: seg.boxW ?? null,
+            baseBoxH: seg.boxH ?? null,
+            rect,
+            moved: false,
+            hitEl: isHandle ? null : (hit || null),
+            wasEditing: hit?.dataset?.editing === '1',
+        };
+        stage.setPointerCapture(e.pointerId);
+        stage.classList.add('dragging');
+    });
+
+    stage.addEventListener('dblclick', () => {
+        const seg = getActivePreviewSegment();
+        if (!seg) return;
+        seg.transform = { x: 0, y: 0, scale: 1 };
+        applyPreviewTransform(seg);
+    });
+
+    stage.addEventListener('pointermove', e => {
+        const drag = editorState.previewDrag;
+        if (!drag) return;
+        const seg = getActivePreviewSegment();
+        if (!seg || seg.id !== drag.id) return;
+        const dx = e.clientX - drag.startX;
+        const dy = e.clientY - drag.startY;
+        if (!drag.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) drag.moved = true;
+        const snapPx = 10;
+        const edgeSnapPx = 20;
+        const snapX = snapPx / drag.rect.width;
+        const snapY = snapPx / drag.rect.height;
+        if (drag.mode === 'resize-text') {
+            if (seg.presetKey === 'title') return;
+            const minSize = 40;
+            const nextW = Math.max(minSize, (drag.baseBoxW ?? seg._mediaW ?? 140) + dx);
+            const nextH = Math.max(minSize, (drag.baseBoxH ?? seg._mediaH ?? 48) + dy);
+            const maxW = drag.rect.width * 0.92;
+            const maxH = drag.rect.height * 0.92;
+            seg.boxW = Math.min(nextW, maxW);
+            seg.boxH = Math.min(nextH, maxH);
+            seg._mediaW = null;
+            seg._mediaH = null;
+            applyTextLayerStyle(seg, document.querySelector(`.preview-layer[data-seg-id="${seg.id}"]`));
+            applyPreviewTransform(seg);
+            return;
+        }
+        if (drag.mode === 'scale' && seg.presetKey === 'title') return;
+        if (drag.mode === 'move') {
+            let nx = drag.baseX + dx / drag.rect.width;
+            let ny = drag.baseY + dy / drag.rect.height;
+            let snapCenterV = false;
+            let snapCenterH = false;
+            let snapQuarterV = null;
+            let snapQuarterH = null;
+            let snapEdgeLeft = false;
+            let snapEdgeRight = false;
+            let snapEdgeTop = false;
+            let snapEdgeBottom = false;
+            const vTargets = [
+                { v: 0, key: 'center' },
+                { v: -0.25, key: 'q1' },
+                { v: 0.25, key: 'q3' },
+            ];
+            const hTargets = [
+                { v: 0, key: 'center' },
+                { v: -0.25, key: 'q1' },
+                { v: 0.25, key: 'q3' },
+            ];
+            const vSnap = vTargets.reduce((best, t) => {
+                const d = Math.abs(nx - t.v);
+                if (d <= snapX && (!best || d < best.d)) return { d, t };
+                return best;
+            }, null);
+            if (vSnap) {
+                nx = vSnap.t.v;
+                snapCenterV = vSnap.t.key === 'center';
+                snapQuarterV = vSnap.t.key !== 'center' ? vSnap.t.key : null;
+            }
+            const hSnap = hTargets.reduce((best, t) => {
+                const d = Math.abs(ny - t.v);
+                if (d <= snapY && (!best || d < best.d)) return { d, t };
+                return best;
+            }, null);
+            if (hSnap) {
+                ny = hSnap.t.v;
+                snapCenterH = hSnap.t.key === 'center';
+                snapQuarterH = hSnap.t.key !== 'center' ? hSnap.t.key : null;
+            }
+            const scale = seg.transform?.scale || 1;
+            const metrics = getPreviewContentMetrics(seg, drag.rect, nx, ny, scale);
+            if (metrics) {
+                const snapNxLeftA = (metrics.dw - drag.rect.width) / (2 * drag.rect.width);
+                const snapNxRightA = (drag.rect.width - metrics.dw) / (2 * drag.rect.width);
+                const snapNyTopA = (metrics.dh - drag.rect.height) / (2 * drag.rect.height);
+                const snapNyBottomA = (drag.rect.height - metrics.dh) / (2 * drag.rect.height);
+
+                const leftA = metrics.left;
+                const rightA = drag.rect.width - metrics.right;
+                const topA = metrics.top;
+                const bottomA = drag.rect.height - metrics.bottom;
+
+                const leftB = (drag.rect.width - metrics.dw) / 2 + nx * drag.rect.width * scale;
+                const rightB = drag.rect.width - (leftB + metrics.dw);
+                const topB = (drag.rect.height - metrics.dh) / 2 + ny * drag.rect.height * scale;
+                const bottomB = drag.rect.height - (topB + metrics.dh);
+
+                const snapNxLeftB = scale !== 0 ? (metrics.dw - drag.rect.width) / (2 * drag.rect.width * scale) : snapNxLeftA;
+                const snapNxRightB = scale !== 0 ? (drag.rect.width - metrics.dw) / (2 * drag.rect.width * scale) : snapNxRightA;
+                const snapNyTopB = scale !== 0 ? (metrics.dh - drag.rect.height) / (2 * drag.rect.height * scale) : snapNyTopA;
+                const snapNyBottomB = scale !== 0 ? (drag.rect.height - metrics.dh) / (2 * drag.rect.height * scale) : snapNyBottomA;
+
+                if (Math.min(Math.abs(leftA), Math.abs(leftB)) <= edgeSnapPx) {
+                    nx = Math.abs(leftA) <= Math.abs(leftB) ? snapNxLeftA : snapNxLeftB;
+                    snapEdgeLeft = true;
+                } else if (Math.min(Math.abs(rightA), Math.abs(rightB)) <= edgeSnapPx) {
+                    nx = Math.abs(rightA) <= Math.abs(rightB) ? snapNxRightA : snapNxRightB;
+                    snapEdgeRight = true;
+                }
+                if (Math.min(Math.abs(topA), Math.abs(topB)) <= edgeSnapPx) {
+                    ny = Math.abs(topA) <= Math.abs(topB) ? snapNyTopA : snapNyTopB;
+                    snapEdgeTop = true;
+                } else if (Math.min(Math.abs(bottomA), Math.abs(bottomB)) <= edgeSnapPx) {
+                    ny = Math.abs(bottomA) <= Math.abs(bottomB) ? snapNyBottomA : snapNyBottomB;
+                    snapEdgeBottom = true;
+                }
+            }
+            seg.transform = { ...seg.transform, x: nx, y: ny };
+            if (previewGuideV) previewGuideV.classList.toggle('active', snapCenterV);
+            if (previewGuideH) previewGuideH.classList.toggle('active', snapCenterH);
+            if (previewGuideVQ1) previewGuideVQ1.classList.toggle('active', snapQuarterV === 'q1');
+            if (previewGuideVQ3) previewGuideVQ3.classList.toggle('active', snapQuarterV === 'q3');
+            if (previewGuideHQ1) previewGuideHQ1.classList.toggle('active', snapQuarterH === 'q1');
+            if (previewGuideHQ3) previewGuideHQ3.classList.toggle('active', snapQuarterH === 'q3');
+            if (previewGuideLeft) previewGuideLeft.classList.toggle('active', snapEdgeLeft);
+            if (previewGuideRight) previewGuideRight.classList.toggle('active', snapEdgeRight);
+            if (previewGuideTop) previewGuideTop.classList.toggle('active', snapEdgeTop);
+            if (previewGuideBottom) previewGuideBottom.classList.toggle('active', snapEdgeBottom);
+        } else {
+            const next = drag.baseScale * (1 - dy * 0.005);
+            const clamped = Math.max(0.2, Math.min(5, next));
+            seg.transform = { ...seg.transform, scale: clamped };
+            if (previewGuideV) previewGuideV.classList.remove('active');
+            if (previewGuideH) previewGuideH.classList.remove('active');
+            if (previewGuideVQ1) previewGuideVQ1.classList.remove('active');
+            if (previewGuideVQ3) previewGuideVQ3.classList.remove('active');
+            if (previewGuideHQ1) previewGuideHQ1.classList.remove('active');
+            if (previewGuideHQ3) previewGuideHQ3.classList.remove('active');
+            if (previewGuideLeft) previewGuideLeft.classList.remove('active');
+            if (previewGuideRight) previewGuideRight.classList.remove('active');
+            if (previewGuideTop) previewGuideTop.classList.remove('active');
+            if (previewGuideBottom) previewGuideBottom.classList.remove('active');
+        }
+        applyPreviewTransform(seg);
+    });
+
+    const endDrag = e => {
+        if (!editorState.previewDrag) return;
+        const drag = editorState.previewDrag;
+        const seg = drag?.id ? getActivePreviewSegment() : null;
+        editorState.previewDrag = null;
+        stage.classList.remove('dragging');
+        if (previewGuideV) previewGuideV.classList.remove('active');
+        if (previewGuideH) previewGuideH.classList.remove('active');
+        if (previewGuideVQ1) previewGuideVQ1.classList.remove('active');
+        if (previewGuideVQ3) previewGuideVQ3.classList.remove('active');
+        if (previewGuideHQ1) previewGuideHQ1.classList.remove('active');
+        if (previewGuideHQ3) previewGuideHQ3.classList.remove('active');
+        if (previewGuideLeft) previewGuideLeft.classList.remove('active');
+        if (previewGuideRight) previewGuideRight.classList.remove('active');
+        if (previewGuideTop) previewGuideTop.classList.remove('active');
+        if (previewGuideBottom) previewGuideBottom.classList.remove('active');
+        if (drag && !drag.moved && drag.hitEl && seg?.mediaType === 'text' && drag.mode !== 'resize-text') {
+            startTextEdit(seg, drag.hitEl);
+        }
+        if (drag?.wasEditing && seg?.mediaType === 'text') {
+            const el = document.querySelector(`.preview-layer[data-seg-id="${seg.id}"]`);
+            const content = el?.querySelector('.text-content');
+            if (content) content.focus();
+        }
+        try { stage.releasePointerCapture(e.pointerId); } catch { }
+    };
+    stage.addEventListener('pointerup', endDrag);
+    stage.addEventListener('pointercancel', endDrag);
+
+    window.addEventListener('resize', () => {
+        applyPreviewRatio();
+        const layers = getActiveVideoSegmentsAtTime(editorState.currentTime || 0);
+        layers.forEach(layer => applyPreviewTransform(layer.seg));
+    });
+}
+
+function getNextVideoSegment(t) {
+    let next = null;
+    for (const track of editorState.tracks) {
+        if (track.type !== 'video') continue;
+        for (const seg of track.segments) {
+            if (seg.mediaType !== 'video') continue;
+            if (seg.start <= t) continue;
+            if (!next || seg.start < next.start) next = seg;
+        }
+    }
+    return next;
+}
+
+function prefetchVideoSegment(seg) {
+    if (!seg || seg.mediaType !== 'video') return;
+    if (editorState.prefetchedSegs.has(seg.id)) return;
+    const media = seg.mediaId ? editorState.mediaItems.find(m => m.id === seg.mediaId) : null;
+    if (!media?.id) return;
+    editorState.prefetchedSegs.add(seg.id);
+    if (window.ensureVideoCached) window.ensureVideoCached(media.id, { silent: true });
 }
 
 function initTimelineScrollSync() {
@@ -232,6 +1048,7 @@ function syncMediaLibrary() {
             source: 'generated',
         });
     });
+    editorState.mediaItems.forEach(ensureMediaDimensions);
     renderMediaList();
 }
 window.syncMediaLibrary = syncMediaLibrary;
@@ -246,10 +1063,16 @@ function renderMediaList() {
         if (m.source) return;
         if (String(m.id || '').startsWith('upload-')) m.source = 'upload';
         else if (String(m.id || '').startsWith('test-')) m.source = 'generated';
+        else if (m.type === 'text') m.source = 'text';
+        else if (m.type === 'effect') m.source = 'effect';
         else m.source = m.type === 'audio' ? 'upload' : 'generated';
     });
     const uploads = editorState.mediaItems.filter(m => m.source === 'upload');
     const generated = editorState.mediaItems.filter(m => m.source === 'generated');
+
+    editorState.mediaItems.forEach(ensureMediaDimensions);
+    renderTextItems();
+    renderEffectItems();
 
     eq('media-gen-count').textContent = generated.length;
     eq('media-up-count').textContent = uploads.length;
@@ -352,8 +1175,24 @@ async function removeMediaIfForbidden(mediaId, src) {
 function mediaItemHTML(m, { compact = false } = {}) {
     const videoIcon = `<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="1.5"/><polygon points="10,8 10,16 17,12" fill="currentColor" opacity="0.8"/></svg>`;
     const audioIcon = `<svg viewBox="0 0 24 24" fill="none"><path d="M9 18V5L21 3V16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="1.5"/><circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="1.5"/></svg>`;
+    const textIcon = `<svg viewBox="0 0 24 24" fill="none"><path d="M4 6H20M12 6V20M7 20H17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+    const effectIcon = `<svg viewBox="0 0 24 24" fill="none"><path d="M4 12H20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><circle cx="16" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/></svg>`;
 
-    let thumbInner = `<div class="media-thumb-icon">${m.type === 'video' ? videoIcon : audioIcon}</div>`;
+    const compactClass = compact ? ' compact' : '';
+    const info = compact ? '' : `
+      <div class="media-info">
+        <div class="media-name">${escH(m.name)}</div>
+        <div class="media-meta">${m.type.toUpperCase()} • ${formatDur(m.duration || 0)}</div>
+      </div>`;
+
+    if (m.type === 'effect') {
+        return `
+        <div class="media-item${compactClass}" data-mid="${m.id}">
+          ${info || `<div class="media-info"><div class="media-name">${escH(m.name)}</div></div>`}
+        </div>`;
+    }
+
+    let thumbInner = `<div class="media-thumb-icon">${m.type === 'video' ? videoIcon : m.type === 'audio' ? audioIcon : m.type === 'effect' ? effectIcon : textIcon}</div>`;
     if (m.src) {
         if (m.type === 'video') {
             if (compact && m.thumbDataUrl) {
@@ -375,13 +1214,6 @@ function mediaItemHTML(m, { compact = false } = {}) {
             thumbInner = `<img src="${safeSrc}" alt="${escH(m.name)}" />`;
         }
     }
-
-    const info = compact ? '' : `
-      <div class="media-info">
-        <div class="media-name">${escH(m.name)}</div>
-        <div class="media-meta">${m.type.toUpperCase()} • ${formatDur(m.duration || 0)}</div>
-      </div>`;
-    const compactClass = compact ? ' compact' : '';
     return `
     <div class="media-item${compactClass}" data-mid="${m.id}">
       <div class="media-thumb">${thumbInner}</div>
@@ -533,8 +1365,221 @@ function dataUrlToBlob(dataUrl) {
     return new Blob([arr], { type: mime });
 }
 
+async function encodeProjectBlob(project) {
+    const json = JSON.stringify(project);
+    if (typeof CompressionStream !== 'undefined') {
+        const cs = new CompressionStream('gzip');
+        const stream = new Blob([json], { type: 'application/json' }).stream().pipeThrough(cs);
+        return await new Response(stream).blob();
+    }
+    return new Blob([json], { type: 'application/json' });
+}
+
+async function decodeProjectFile(file) {
+    const isSvs = (file?.name || '').toLowerCase().endsWith('.svs');
+    if (isSvs && typeof DecompressionStream !== 'undefined') {
+        const ds = new DecompressionStream('gzip');
+        const stream = file.stream().pipeThrough(ds);
+        const text = await new Response(stream).text();
+        return JSON.parse(text);
+    }
+    const text = await file.text();
+    try {
+        return JSON.parse(text);
+    } catch {
+        if (isSvs) {
+            throw new Error('This browser cannot open compressed .svs files. Use Chrome/Edge or server mode.');
+        }
+        throw new Error('Invalid project file');
+    }
+}
+
+function canUseProjectServer() {
+    return typeof location !== 'undefined' && location.protocol !== 'file:';
+}
+
+async function saveProjectToServer(project) {
+    if (!canUseProjectServer()) return null;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const name = `vibedstudio-${stamp}.svs`;
+    try {
+        const resp = await fetch('/api/project/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, project }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return await resp.json();
+    } catch {
+        return null;
+    }
+}
+
+function triggerProjectLoad() {
+    ensureProjectFileInputBound();
+    const input = eq('project-file-input');
+    if (!input) {
+        showToast('Project loader unavailable', 'error', '❌');
+        return;
+    }
+    input.click();
+}
+
+function ensureProjectFileInputBound() {
+    const input = eq('project-file-input');
+    if (!input || input.dataset.bound === '1') return;
+    input.dataset.bound = '1';
+    input.addEventListener('change', e => {
+        const file = e.target.files?.[0];
+        if (file) {
+            showToast('Loading project…', 'info', '⏳');
+            loadProject(file).catch(err => {
+                console.error('Load project failed:', err);
+                showToast(`Load failed: ${err?.message || err}`, 'error', '❌');
+            });
+        }
+        e.target.value = '';
+    });
+}
+
+async function collectVideoHistory(maxBlobSize) {
+    if (!window.dbGetAll || !window.db) return [];
+    try {
+        const records = await window.dbGetAll('videos');
+        if (!records || !records.length) return [];
+        const items = [];
+        for (const r of records) {
+            const entry = {
+                id: r.id,
+                status: r.status,
+                videoUrl: r.videoUrl || null,
+                thumbDataUrl: r.thumbDataUrl || null,
+                thumbDisabled: !!r.thumbDisabled,
+                draft: !!r.draft,
+                mode: r.mode || null,
+                draftTaskId: r.draftTaskId || null,
+                promptText: r.promptText || '',
+                imageDataUrl: r.imageDataUrl || null,
+                firstFrameDataUrl: r.firstFrameDataUrl || null,
+                lastFrameDataUrl: r.lastFrameDataUrl || null,
+                referenceImages: Array.isArray(r.referenceImages) ? r.referenceImages : [],
+                generateAudio: !!r.generateAudio,
+                watermark: !!r.watermark,
+                prompt: r.prompt || '',
+                model: r.model || null,
+                ratio: r.ratio || null,
+                duration: r.duration || null,
+                resolution: r.resolution || null,
+                returnLastFrame: !!r.returnLastFrame,
+                serviceTier: r.serviceTier || null,
+                tokensUsed: r.tokensUsed ?? null,
+                tokensEstimate: r.tokensEstimate ?? null,
+                lastFrameUrl: r.lastFrameUrl || null,
+                cameraFixed: !!r.cameraFixed,
+                seed: r.seed ?? null,
+                timestamp: r.timestamp instanceof Date ? r.timestamp.toISOString() : r.timestamp || null,
+            };
+            if (r.videoBlob instanceof Blob) {
+                if (!maxBlobSize || r.videoBlob.size <= maxBlobSize) {
+                    try {
+                        entry.videoBlobBase64 = await blobToDataUrl(r.videoBlob);
+                    } catch {
+                        entry.videoBlobSkipped = true;
+                    }
+                } else {
+                    entry.videoBlobSkipped = true;
+                    entry.videoBlobSize = r.videoBlob.size;
+                }
+            }
+            items.push(entry);
+        }
+        return items;
+    } catch {
+        return [];
+    }
+}
+
+async function clearVideoHistoryStore() {
+    if (!window.db) return;
+    try {
+        const tx = window.db.transaction('videos', 'readwrite');
+        tx.objectStore('videos').clear();
+        await new Promise((resolve, reject) => {
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+    } catch {
+    }
+}
+
+async function collectImageHistory(maxBlobSize) {
+    if (!window.dbGetAll || !window.db) return [];
+    try {
+        const records = await window.dbGetAll('images');
+        if (!records || !records.length) return [];
+        const items = [];
+        for (const r of records) {
+            const entry = {
+                id: r.id,
+                url: r.url || null,
+                prompt: r.prompt || '',
+                model: r.model || null,
+                size: r.size || null,
+                format: r.format || null,
+                timestamp: r.timestamp instanceof Date ? r.timestamp.toISOString() : r.timestamp || null,
+            };
+            if (r.blob instanceof Blob) {
+                if (!maxBlobSize || r.blob.size <= maxBlobSize) {
+                    try {
+                        entry.blobBase64 = await blobToDataUrl(r.blob);
+                    } catch {
+                        entry.blobSkipped = true;
+                    }
+                } else {
+                    entry.blobSkipped = true;
+                    entry.blobSize = r.blob.size;
+                }
+            }
+            items.push(entry);
+        }
+        return items;
+    } catch {
+        return [];
+    }
+}
+
+async function clearImageHistoryStore() {
+    if (!window.db) return;
+    try {
+        const tx = window.db.transaction('images', 'readwrite');
+        tx.objectStore('images').clear();
+        await new Promise((resolve, reject) => {
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+    } catch {
+    }
+}
+
 async function saveProject() {
     const maxInlineSize = 12 * 1024 * 1024; // 12MB per asset
+    const maxCachedVideoSize = 80 * 1024 * 1024; // 80MB for cached videos
+    const maxHistoryVideoSize = 80 * 1024 * 1024; // 80MB per history video
+    const maxHistoryImageSize = 25 * 1024 * 1024; // 25MB per history image
+    let cachedVideoMap = new Map();
+    if (window.dbGetAll && window.db) {
+        try {
+            const records = await window.dbGetAll('videos');
+            cachedVideoMap = new Map(
+                (records || [])
+                    .filter(r => r?.videoBlob instanceof Blob && r?.id)
+                    .map(r => [r.id, r.videoBlob])
+            );
+        } catch {
+        }
+    }
     const mediaItems = await Promise.all(editorState.mediaItems.map(async m => {
         const item = {
             id: m.id,
@@ -543,7 +1588,36 @@ async function saveProject() {
             duration: m.duration,
             source: m.source,
             src: m.src || null,
+            text: m.text || null,
+            fontFamily: m.fontFamily || null,
+            fontSize: m.fontSize || null,
+            fontWeight: m.fontWeight || null,
+            fontStyle: m.fontStyle || null,
+            color: m.color || null,
+            align: m.align || null,
+            bgColor: m.bgColor || null,
+            padding: m.padding ?? null,
+            lineHeight: m.lineHeight || null,
+            letterSpacing: m.letterSpacing ?? null,
+            underline: m.underline ?? null,
+            effectKey: m.effectKey || null,
+            presetKey: m.presetKey || null,
+            boxW: m.boxW ?? null,
+            boxH: m.boxH ?? null,
         };
+        if (m.type === 'video' && cachedVideoMap.has(m.id)) {
+            const cachedBlob = cachedVideoMap.get(m.id);
+            if (cachedBlob && cachedBlob.size <= maxCachedVideoSize) {
+                try {
+                    item.cachedVideoDataUrl = await blobToDataUrl(cachedBlob);
+                } catch {
+                    item.cachedVideoSkipped = true;
+                }
+            } else if (cachedBlob) {
+                item.cachedVideoSkipped = true;
+                item.cachedVideoSize = cachedBlob.size;
+            }
+        }
         if (m.src && String(m.src).startsWith('blob:')) {
             try {
                 const resp = await fetch(m.src);
@@ -564,6 +1638,7 @@ async function saveProject() {
     const project = {
         version: 1,
         savedAt: new Date().toISOString(),
+        apiKey: (window.state?.apiKey || localStorage.getItem('vibedstudio_api_key') || ''),
         timelineDur: editorState.timelineDur,
         pxPerSec: editorState.pxPerSec,
         tracks: editorState.tracks.map(t => ({
@@ -582,41 +1657,143 @@ async function saveProject() {
                 fadeOut: !!s.fadeOut,
                 fadeInDur: s.fadeInDur || null,
                 fadeOutDur: s.fadeOutDur || null,
+                transform: s.transform || null,
+                text: s.text || null,
+                fontFamily: s.fontFamily || null,
+                fontSize: s.fontSize || null,
+                fontWeight: s.fontWeight || null,
+                fontStyle: s.fontStyle || null,
+                color: s.color || null,
+                align: s.align || null,
+                bgColor: s.bgColor || null,
+                padding: s.padding ?? null,
+                lineHeight: s.lineHeight || null,
+                letterSpacing: s.letterSpacing ?? null,
+                underline: s.underline ?? null,
+                effectKey: s.effectKey || null,
+                presetKey: s.presetKey || null,
+                boxW: s.boxW ?? null,
+                boxH: s.boxH ?? null,
             })),
         })),
         transitions: editorState.transitions,
         mediaItems,
     };
+    const history = await collectVideoHistory(maxHistoryVideoSize);
+    if (history.length) project.videoHistory = history;
+    const imageHistory = await collectImageHistory(maxHistoryImageSize);
+    if (imageHistory.length) project.imageHistory = imageHistory;
 
-    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
+    if (window.state) {
+        const textPromptEl = document.getElementById('text-prompt');
+        const imagePromptEl = document.getElementById('image-prompt');
+        const refPrompt = typeof getReferencePromptText === 'function' ? getReferencePromptText() : '';
+        const imgPromptEl = document.getElementById('img-prompt');
+        const imgModel = document.querySelector('#img-model-grid .model-card.selected')?.dataset?.model || null;
+        const imgSize = document.querySelector('.img-size-btn.selected')?.dataset?.size || null;
+        const imgFormat = document.querySelector('.img-format-btn.selected')?.dataset?.format || null;
+        project.generatorState = {
+            video: {
+                model: window.state.model,
+                ratio: window.state.ratio,
+                duration: window.state.duration,
+                resolution: window.state.resolution,
+                returnLastFrame: window.state.returnLastFrame,
+                serviceTier: window.state.serviceTier,
+                generateAudio: window.state.generateAudio,
+                watermark: window.state.watermark,
+                cameraFixed: window.state.cameraFixed,
+                seed: window.state.seed,
+                draft: window.state.draft,
+                mode: window.state.mode,
+                imageDataUrl: window.state.imageDataUrl || null,
+                firstFrameDataUrl: window.state.firstFrameDataUrl || null,
+                lastFrameDataUrl: window.state.lastFrameDataUrl || null,
+                referenceImages: Array.isArray(window.state.referenceImages) ? window.state.referenceImages : [],
+                promptText: textPromptEl?.value || '',
+                imagePromptText: imagePromptEl?.value || '',
+                referencePromptText: refPrompt || '',
+            },
+            image: {
+                model: imgModel,
+                size: imgSize,
+                format: imgFormat,
+                promptText: imgPromptEl?.value || '',
+            },
+        };
+    }
+
+    const blob = await encodeProjectBlob(project);
+    const defaultName = `vibedstudio-project-${new Date().toISOString().replace(/[:.]/g, '-')}.svs`;
+
+    if (typeof window.showSaveFilePicker === 'function') {
+        try {
+            const handle = await window.showSaveFilePicker({
+                suggestedName: defaultName,
+                types: [{
+                    description: 'VibedStudio Project',
+                    accept: { 'application/octet-stream': ['.svs'] },
+                }],
+            });
+            const writable = await handle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            showToast('Project saved', 'success', '💾');
+            return;
+        } catch (err) {
+            if (err && err.name === 'AbortError') return;
+        }
+    }
+
+    const serverRes = await saveProjectToServer(project);
+    if (serverRes?.ok) {
+        showToast(`Project saved: ${serverRes.name}`, 'success', '💾');
+        return;
+    }
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `vibedstudio-project-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    a.download = defaultName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast('Project saved', 'success', '💾');
+    showToast('Project saved (downloaded .svs)', 'success', '💾');
 }
 
-async function loadProject(file) {
-    let data;
-    try {
-        data = JSON.parse(await file.text());
-    } catch {
-        showToast('Invalid project file', 'error', '❌');
-        return;
-    }
+async function applyProjectData(data) {
     if (!data || !Array.isArray(data.tracks) || !Array.isArray(data.mediaItems)) {
         showToast('Project file missing required data', 'error', '❌');
         return;
     }
 
+    if (data.apiKey !== undefined) {
+        const apiKey = String(data.apiKey || '').trim();
+        const apiInput = eq('api-key');
+        if (apiInput) {
+            apiInput.value = apiKey;
+            apiInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        localStorage.setItem('vibedstudio_api_key', apiKey);
+        if (window.state) window.state.apiKey = apiKey;
+        if (typeof window.updateHakDot === 'function') {
+            window.updateHakDot();
+        }
+    }
+
     // Rebuild media items
+    const cachedVideoBlobs = new Map();
     const mediaItems = data.mediaItems.map(m => {
         let src = m.src || null;
-        if (m.srcDataUrl) {
+        if (m.cachedVideoDataUrl) {
+            try {
+                const blob = dataUrlToBlob(m.cachedVideoDataUrl);
+                cachedVideoBlobs.set(m.id, blob);
+                src = URL.createObjectURL(blob);
+            } catch {
+            }
+        } else if (m.srcDataUrl) {
             try { src = URL.createObjectURL(dataUrlToBlob(m.srcDataUrl)); } catch { }
         }
         return {
@@ -626,6 +1803,22 @@ async function loadProject(file) {
             duration: m.duration,
             source: m.source,
             src,
+            text: m.text || null,
+            fontFamily: m.fontFamily || null,
+            fontSize: m.fontSize || null,
+            fontWeight: m.fontWeight || null,
+            fontStyle: m.fontStyle || null,
+            color: m.color || null,
+            align: m.align || null,
+            bgColor: m.bgColor || null,
+            padding: m.padding ?? null,
+            lineHeight: m.lineHeight || null,
+            letterSpacing: m.letterSpacing ?? null,
+            underline: m.underline ?? null,
+            effectKey: m.effectKey || null,
+            presetKey: m.presetKey || null,
+            boxW: m.boxW ?? null,
+            boxH: m.boxH ?? null,
         };
     });
 
@@ -633,6 +1826,9 @@ async function loadProject(file) {
         ...m,
         proxySrc: maybeProxySrc(m.src),
     }));
+    editorState.mediaItems.forEach(m => {
+        if (!m.source && m.type === 'text') m.source = 'text';
+    });
     editorState.tracks = data.tracks.map(t => ({
         id: t.id,
         type: t.type,
@@ -650,8 +1846,40 @@ async function loadProject(file) {
             fadeOut: !!s.fadeOut,
             fadeInDur: s.fadeInDur || null,
             fadeOutDur: s.fadeOutDur || null,
+            transform: s.transform || { x: 0, y: 0, scale: 1 },
+            text: s.text || null,
+            fontFamily: s.fontFamily || null,
+            fontSize: s.fontSize || null,
+            fontWeight: s.fontWeight || null,
+            fontStyle: s.fontStyle || null,
+            color: s.color || null,
+            align: s.align || null,
+            bgColor: s.bgColor || null,
+            padding: s.padding ?? null,
+            lineHeight: s.lineHeight || null,
+            letterSpacing: s.letterSpacing ?? null,
+            underline: s.underline ?? null,
+            effectKey: s.effectKey || null,
+            presetKey: s.presetKey || null,
+            boxW: s.boxW ?? null,
+            boxH: s.boxH ?? null,
         })),
     }));
+
+    if (cachedVideoBlobs.size && window.dbPut && window.db) {
+        const timestamp = new Date().toISOString();
+        cachedVideoBlobs.forEach((blob, id) => {
+            const src = mediaItems.find(m => m.id === id)?.src || null;
+            window.dbPut('videos', {
+                id,
+                status: 'cached',
+                videoUrl: src,
+                videoBlob: blob,
+                duration: mediaItems.find(m => m.id === id)?.duration || null,
+                timestamp,
+            }).catch(() => {});
+        });
+    }
     editorState.transitions = Array.isArray(data.transitions) ? data.transitions : [];
 
     const maxEnd = editorState.tracks.flatMap(t => t.segments).reduce((m, s) => Math.max(m, (s.start || 0) + (s.duration || 0)), 0);
@@ -663,6 +1891,141 @@ async function loadProject(file) {
     renderMediaList();
     renderTimeline();
     seekTo(0);
+
+    if (Array.isArray(data.videoHistory) && data.videoHistory.length) {
+        try {
+            if (typeof ensureDBReady === 'function') {
+                await ensureDBReady();
+            }
+            await clearVideoHistoryStore();
+            if (window.state) window.state.jobs = [];
+            for (const v of data.videoHistory) {
+                let blob = null;
+                if (v.videoBlobBase64) {
+                    try { blob = dataUrlToBlob(v.videoBlobBase64); } catch { blob = null; }
+                }
+                const record = {
+                    id: v.id || `import-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                    status: v.status || ((v.videoUrl || blob) ? 'succeeded' : 'failed'),
+                    videoUrl: v.videoUrl || null,
+                    videoBlob: blob,
+                    thumbDataUrl: v.thumbDataUrl || null,
+                    thumbDisabled: !!v.thumbDisabled,
+                    prompt: v.prompt || '',
+                    model: v.model || (window.state?.model || null),
+                    ratio: v.ratio || (window.state?.ratio || null),
+                    duration: v.duration || 5,
+                    resolution: v.resolution || null,
+                    returnLastFrame: !!v.returnLastFrame,
+                    serviceTier: v.serviceTier || 'default',
+                    draft: !!v.draft,
+                    mode: v.mode || 'text',
+                    draftTaskId: v.draftTaskId || null,
+                    promptText: v.promptText || '',
+                    imageDataUrl: v.imageDataUrl || null,
+                    firstFrameDataUrl: v.firstFrameDataUrl || null,
+                    lastFrameDataUrl: v.lastFrameDataUrl || null,
+                    referenceImages: Array.isArray(v.referenceImages) ? v.referenceImages : [],
+                    generateAudio: !!v.generateAudio,
+                    watermark: !!v.watermark,
+                    tokensUsed: v.tokensUsed ?? null,
+                    tokensEstimate: v.tokensEstimate ?? null,
+                    lastFrameUrl: v.lastFrameUrl || null,
+                    cameraFixed: !!v.cameraFixed,
+                    seed: v.seed ?? null,
+                    timestamp: v.timestamp || new Date().toISOString(),
+                };
+                if (window.dbPut && window.db) await window.dbPut('videos', record).catch(() => {});
+                record.timestamp = new Date(record.timestamp);
+                if (record.videoBlob) record.videoUrl = URL.createObjectURL(record.videoBlob);
+                if (window.state) window.state.jobs.push(record);
+            }
+            if (typeof renderVideoPage === 'function') renderVideoPage();
+            if (typeof updateEmptyState === 'function') updateEmptyState();
+            if (window.syncMediaLibrary) window.syncMediaLibrary();
+        } catch (e) {
+            console.warn('Video history restore failed:', e);
+        }
+    }
+
+    if (Array.isArray(data.imageHistory) && data.imageHistory.length) {
+        try {
+            if (typeof ensureDBReady === 'function') {
+                await ensureDBReady();
+            }
+            await clearImageHistoryStore();
+            const restored = [];
+            for (const img of data.imageHistory) {
+                let blob = null;
+                if (img.blobBase64) {
+                    try { blob = dataUrlToBlob(img.blobBase64); } catch { blob = null; }
+                }
+                const record = {
+                    id: img.id || `import-img-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                    url: img.url || null,
+                    prompt: img.prompt || '',
+                    model: img.model || null,
+                    size: img.size || null,
+                    format: img.format || null,
+                    timestamp: img.timestamp || new Date().toISOString(),
+                    blob,
+                };
+                restored.push(record);
+                if (window.dbPut && window.db) await window.dbPut('images', record).catch(() => {});
+            }
+            if (typeof window.applyImageHistory === 'function') {
+                window.applyImageHistory(restored);
+            } else if (window.initImages) {
+                window.initImages();
+            }
+        } catch (e) {
+            console.warn('Image history restore failed:', e);
+        }
+    }
+
+    if (data.generatorState && typeof window.applyJobToForm === 'function') {
+        const v = data.generatorState.video || {};
+        const job = {
+            model: v.model,
+            ratio: v.ratio,
+            duration: v.duration,
+            resolution: v.resolution,
+            serviceTier: v.serviceTier,
+            generateAudio: v.generateAudio,
+            returnLastFrame: v.returnLastFrame,
+            cameraFixed: v.cameraFixed,
+            seed: v.seed,
+            draft: v.draft,
+            mode: v.mode,
+            promptText: v.promptText || v.referencePromptText || v.imagePromptText || '',
+            imageDataUrl: v.imageDataUrl || null,
+            firstFrameDataUrl: v.firstFrameDataUrl || null,
+            lastFrameDataUrl: v.lastFrameDataUrl || null,
+            referenceImages: Array.isArray(v.referenceImages) ? v.referenceImages : [],
+        };
+        window.applyJobToForm(job);
+        if (v.referencePromptText && typeof window.setReferencePromptFromText === 'function') {
+            window.setReferencePromptFromText(v.referencePromptText);
+        }
+        if (v.imagePromptText) {
+            const imgPromptEl = document.getElementById('image-prompt');
+            if (imgPromptEl) imgPromptEl.value = v.imagePromptText;
+        }
+        if (data.generatorState.image && typeof window.applyImageGeneratorState === 'function') {
+            window.applyImageGeneratorState(data.generatorState.image);
+        }
+    }
+}
+
+async function loadProject(file) {
+    let data;
+    try {
+        data = await decodeProjectFile(file);
+    } catch (err) {
+        showToast(err?.message || 'Invalid project file', 'error', '❌');
+        return;
+    }
+    await applyProjectData(data);
     showToast('Project loaded', 'success', '📂');
 }
 
@@ -710,12 +2073,15 @@ function renderTimeline() {
     renderTracks();
     renderPlayhead();
     updateTimeDisplay();
+    if (eq('preview-layers')) {
+        updatePreviewForTime(editorState.currentTime);
+    }
 }
 
 function updateTimelineDur() {
     const videoSegs = editorState.tracks
         .flatMap(t => t.segments)
-        .filter(s => s.mediaType === 'video' || s.mediaType === 'image');
+        .filter(s => s.mediaType === 'video' || s.mediaType === 'image' || s.mediaType === 'text' || s.mediaType === 'effect');
     const maxEnd = videoSegs.reduce((m, s) => Math.max(m, (s.start || 0) + (s.duration || 0)), 0);
     const next = maxEnd > 0 ? Math.max(TIMELINE_MIN_SECONDS, maxEnd) : TIMELINE_MIN_SECONDS;
     if (Math.abs(next - editorState.timelineDur) > 0.01) {
@@ -1062,6 +2428,193 @@ function showSegmentMenu(x, y, seg) {
     }
 }
 
+function showEffectSegmentMenu(x, y, seg) {
+    hideSegmentMenu();
+    hideTransitionMenu();
+    const menu = document.createElement('div');
+    menu.className = 'tl-context-menu';
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    const options = [
+        { key: 'zoom-punch', label: 'Zoom Punch' },
+        { key: 'glitch', label: 'Glitch' },
+        { key: 'vhs', label: 'VHS' },
+        { key: 'blur-in', label: 'Blur In' },
+    ];
+    menu.innerHTML = `
+        <div class="tl-context-title">Effect</div>
+        ${options.map(o => `
+            <button data-action="set" data-key="${o.key}">
+                ${o.label}${seg.effectKey === o.key ? ' ✓' : ''}
+            </button>
+        `).join('')}
+        <button class="danger" data-action="remove">Remove Effect</button>
+    `;
+    const onClick = e => {
+        const action = e.target?.dataset?.action;
+        if (!action) return;
+        if (action === 'set') {
+            seg.effectKey = e.target.dataset.key || seg.effectKey;
+        }
+        if (action === 'remove') {
+            const track = findTrackBySegId(seg.id);
+            if (track) track.segments = track.segments.filter(s => s.id !== seg.id);
+        }
+        hideSegmentMenu();
+        renderTimeline();
+        updatePreviewForTime(editorState.currentTime || 0);
+    };
+    menu.addEventListener('click', onClick);
+    document.body.appendChild(menu);
+    editorState.segmentMenuEl = menu;
+    setTimeout(() => {
+        document.addEventListener('click', hideSegmentMenu, { once: true });
+        document.addEventListener('keydown', onMenuKey, { once: true });
+    }, 0);
+
+    function onMenuKey(e) {
+        if (e.key === 'Escape') hideSegmentMenu();
+    }
+}
+
+function showTextStyleMenu(x, y, seg) {
+    hideSegmentMenu();
+    hideTransitionMenu();
+    const menu = document.createElement('div');
+    menu.className = 'tl-context-menu';
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    const fontOptions = [
+        'Inter',
+        'Arial',
+        'Helvetica',
+        'Verdana',
+        'Trebuchet MS',
+        'Georgia',
+        'Times New Roman',
+        'Garamond',
+        'Courier New',
+        'Impact',
+    ];
+    menu.innerHTML = `
+        <div class="tl-context-title">Text Style</div>
+        <label class="tl-context-label">Font</label>
+        <select data-field="fontFamily">
+            ${fontOptions.map(f => `<option value="${f}">${f}</option>`).join('')}
+        </select>
+        <div class="tl-context-row">
+            <div>
+                <label class="tl-context-label">Size</label>
+                <input type="number" min="8" max="300" step="1" data-field="fontSize" />
+            </div>
+            <div>
+                <label class="tl-context-label">Color</label>
+                <input type="color" data-field="color" />
+            </div>
+        </div>
+        <div class="tl-context-row">
+            <div>
+                <label class="tl-context-label">Background</label>
+                <input type="color" data-field="bgColor" />
+            </div>
+            <div>
+                <label class="tl-context-label">Opacity</label>
+                <input type="range" min="0" max="1" step="0.05" data-field="bgOpacity" />
+            </div>
+        </div>
+        <div class="tl-context-row">
+            <div>
+                <label class="tl-context-label">Align</label>
+                <select data-field="align">
+                    <option value="left">Left</option>
+                    <option value="center">Center</option>
+                    <option value="right">Right</option>
+                </select>
+            </div>
+            <div>
+                <label class="tl-context-label">Style</label>
+                <div class="tl-context-inline">
+                    <label><input type="checkbox" data-field="bold" /> Bold</label>
+                    <label><input type="checkbox" data-field="italic" /> Italic</label>
+                    <label><input type="checkbox" data-field="underline" /> Underline</label>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const style = getTextStyle(seg);
+    const fontEl = menu.querySelector('[data-field="fontFamily"]');
+    const sizeEl = menu.querySelector('[data-field="fontSize"]');
+    const colorEl = menu.querySelector('[data-field="color"]');
+    const alignEl = menu.querySelector('[data-field="align"]');
+    const boldEl = menu.querySelector('[data-field="bold"]');
+    const italicEl = menu.querySelector('[data-field="italic"]');
+    const underlineEl = menu.querySelector('[data-field="underline"]');
+    const bgEl = menu.querySelector('[data-field="bgColor"]');
+    const bgOpacityEl = menu.querySelector('[data-field="bgOpacity"]');
+
+    fontEl.value = fontOptions.includes(style.fontFamily) ? style.fontFamily : 'Inter';
+    sizeEl.value = style.fontSize;
+    colorEl.value = style.color;
+    alignEl.value = style.align;
+    boldEl.checked = Number(style.fontWeight) >= 600;
+    italicEl.checked = style.fontStyle === 'italic';
+    underlineEl.checked = !!style.underline;
+    const bgVal = style.bgColor || 'transparent';
+    const rgbaMatch = bgVal.match(/rgba?\(([^)]+)\)/i);
+    let bgOpacity = 1;
+    if (bgVal === 'transparent') {
+        bgOpacity = 0;
+    } else if (rgbaMatch) {
+        const parts = rgbaMatch[1].split(',').map(v => v.trim());
+        if (parts.length === 4) bgOpacity = Number(parts[3]) || 0;
+    }
+    bgOpacityEl.value = String(Math.max(0, Math.min(1, bgOpacity)));
+    bgEl.value = bgVal.startsWith('#') ? bgVal : '#000000';
+
+    const applyChanges = (soft = false) => {
+        seg.fontFamily = fontEl.value || 'Inter';
+        seg.fontSize = Number(sizeEl.value) || 48;
+        seg.fontWeight = boldEl.checked ? 700 : 400;
+        seg.fontStyle = italicEl.checked ? 'italic' : 'normal';
+        seg.underline = !!underlineEl.checked;
+        seg.color = colorEl.value || '#ffffff';
+        const opacity = Math.max(0, Math.min(1, Number(bgOpacityEl.value)));
+        const base = bgEl.value || '#000000';
+        const rgb = base.replace('#', '');
+        const r = parseInt(rgb.substring(0, 2), 16) || 0;
+        const g = parseInt(rgb.substring(2, 4), 16) || 0;
+        const b = parseInt(rgb.substring(4, 6), 16) || 0;
+        seg.bgColor = opacity === 0 ? 'transparent' : `rgba(${r}, ${g}, ${b}, ${opacity})`;
+        seg.align = alignEl.value || 'center';
+        seg._mediaW = null;
+        seg._mediaH = null;
+        if (seg.padding == null) seg.padding = 8;
+        if (!seg.lineHeight) seg.lineHeight = 1.1;
+        if (seg.letterSpacing == null) seg.letterSpacing = 0;
+        applyTextLayerStyle(seg, document.querySelector(`.preview-layer[data-seg-id="${seg.id}"]`));
+        applyPreviewTransform(seg);
+        if (!soft) renderTimeline();
+    };
+
+    [fontEl, sizeEl, colorEl, bgEl, bgOpacityEl, alignEl, boldEl, italicEl, underlineEl].forEach(input => {
+        input.addEventListener('input', () => applyChanges(true));
+        input.addEventListener('change', () => applyChanges(false));
+    });
+
+    menu.addEventListener('click', e => e.stopPropagation());
+    document.body.appendChild(menu);
+    editorState.segmentMenuEl = menu;
+    setTimeout(() => {
+        document.addEventListener('click', hideSegmentMenu, { once: true });
+        document.addEventListener('keydown', onMenuKey, { once: true });
+    }, 0);
+
+    function onMenuKey(e) {
+        if (e.key === 'Escape') hideSegmentMenu();
+    }
+}
+
 function hideSegmentMenu() {
     if (editorState.segmentMenuEl) {
         editorState.segmentMenuEl.remove();
@@ -1102,6 +2655,58 @@ function showPlayheadMenu(x, y) {
     function onMenuKey(e) {
         if (e.key === 'Escape') hidePlayheadMenu();
     }
+}
+
+function startTextEdit(seg, el) {
+    if (!seg || !el) return;
+    if (el.dataset.editing === '1') return;
+    el.dataset.editing = '1';
+    el.classList.add('text-editing');
+    const style = getTextStyle(seg);
+    let contentEl = el.querySelector('.text-content');
+    if (!contentEl) {
+        contentEl = document.createElement('span');
+        contentEl.className = 'text-content';
+        el.appendChild(contentEl);
+    }
+    contentEl.contentEditable = 'true';
+    contentEl.spellcheck = false;
+    contentEl.textContent = style.text;
+    contentEl.focus();
+    document.execCommand?.('selectAll', false, null);
+
+    const finish = () => {
+        contentEl.contentEditable = 'false';
+        el.classList.remove('text-editing');
+        el.dataset.editing = '0';
+        const nextText = contentEl.innerText.replace(/\r\n/g, '\n').trimEnd();
+        seg.text = nextText || 'Text';
+        seg._mediaW = null;
+        seg._mediaH = null;
+        const firstLine = seg.text.split('\n')[0].trim();
+        seg.name = firstLine ? `Text: ${firstLine.slice(0, 24)}` : 'Text Overlay';
+        applyTextLayerStyle(seg, el);
+        applyPreviewTransform(seg);
+        renderTimeline();
+    };
+
+    const onKey = ev => {
+        if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
+            ev.preventDefault();
+            el.blur();
+        }
+        if (ev.key === 'Escape') {
+            ev.preventDefault();
+            el.textContent = style.text;
+            el.blur();
+        }
+    };
+
+    contentEl.addEventListener('keydown', onKey, { once: false });
+    contentEl.addEventListener('blur', () => {
+        contentEl.removeEventListener('keydown', onKey);
+        finish();
+    }, { once: true });
 }
 
 function hidePlayheadMenu() {
@@ -1164,6 +2769,120 @@ function findTrackBySegId(segId) {
         if (t.segments.find(s => s.id === segId)) return t;
     }
     return null;
+}
+
+function getSelectedSegment() {
+    if (!editorState.selectedSegId) return null;
+    for (const t of editorState.tracks) {
+        const seg = t.segments.find(s => s.id === editorState.selectedSegId);
+        if (seg) return seg;
+    }
+    return null;
+}
+
+function getTrackTypeForMedia(mediaType) {
+    if (mediaType === 'audio') return 'audio';
+    if (mediaType === 'text') return 'text';
+    if (mediaType === 'effect') return 'effect';
+    return 'video';
+}
+
+function cloneSegmentData(seg) {
+    return {
+        id: seg.id,
+        mediaId: seg.mediaId,
+        name: seg.name,
+        src: seg.src,
+        start: seg.start,
+        duration: seg.duration,
+        mediaType: seg.mediaType,
+        muted: !!seg.muted,
+        fadeIn: !!seg.fadeIn,
+        fadeOut: !!seg.fadeOut,
+        fadeInDur: seg.fadeInDur || null,
+        fadeOutDur: seg.fadeOutDur || null,
+        thumbDataUrl: seg.thumbDataUrl || null,
+        transform: seg.transform ? { ...seg.transform } : { x: 0, y: 0, scale: 1 },
+        text: seg.text || null,
+        fontFamily: seg.fontFamily || null,
+        fontSize: seg.fontSize || null,
+        fontWeight: seg.fontWeight || null,
+        fontStyle: seg.fontStyle || null,
+        color: seg.color || null,
+        align: seg.align || null,
+        bgColor: seg.bgColor || null,
+        padding: seg.padding ?? null,
+        lineHeight: seg.lineHeight || null,
+        letterSpacing: seg.letterSpacing ?? null,
+        underline: !!seg.underline,
+        effectKey: seg.effectKey || null,
+        boxW: seg.boxW ?? null,
+        boxH: seg.boxH ?? null,
+    };
+}
+
+function copySelectedSegment() {
+    const seg = getSelectedSegment();
+    if (!seg) return false;
+    editorState.clipboardSeg = cloneSegmentData(seg);
+    const track = findTrackBySegId(seg.id);
+    editorState.clipboardTrackId = track?.id || null;
+    showToast('Clip copied', 'info', '📋');
+    return true;
+}
+
+function pasteClipboardSegment() {
+    const data = editorState.clipboardSeg;
+    if (!data) {
+        showToast('Clipboard is empty', 'info', '📋');
+        return false;
+    }
+    const desiredStart = Math.max(0, editorState.currentTime || 0);
+    const trackType = getTrackTypeForMedia(data.mediaType);
+    const originalTrack = editorState.clipboardTrackId
+        ? editorState.tracks.find(t => t.id === editorState.clipboardTrackId)
+        : null;
+    const candidates = editorState.tracks.filter(t => t.type === trackType);
+    const ordered = originalTrack && originalTrack.type === trackType
+        ? [originalTrack, ...candidates.filter(t => t.id !== originalTrack.id)]
+        : candidates;
+
+    let target = null;
+    let start = null;
+    for (const t of ordered) {
+        const resolved = resolveNonOverlap(t, data.duration || 1, desiredStart, null);
+        if (resolved != null) {
+            target = t;
+            start = resolved;
+            break;
+        }
+    }
+
+    if (!target) {
+        const newTrack = addTrack(trackType);
+        target = newTrack || editorState.tracks.find(t => t.type === trackType);
+        if (target) start = resolveNonOverlap(target, data.duration || 1, desiredStart, null);
+    }
+
+    if (!target || start == null) {
+        showToast('No space to paste on the timeline', 'error', '⚠️');
+        return false;
+    }
+
+    const seg = {
+        ...data,
+        id: 'seg-' + Date.now() + '-' + Math.random().toString(16).slice(2, 6),
+        start,
+        transform: data.transform ? { ...data.transform } : { x: 0, y: 0, scale: 1 },
+    };
+    delete seg._mediaW;
+    delete seg._mediaH;
+    target.segments.push(seg);
+    editorState.selectedSegId = seg.id;
+    editorState.previewSegId = seg.id;
+    renderTimeline();
+    showToast('Clip pasted', 'success', '📋');
+    return true;
 }
 
 function findSegmentAtTime(t) {
@@ -1439,8 +3158,10 @@ function createSegmentEl(seg, track) {
         e.preventDefault();
 
         editorState.selectedSegId = seg.id;
+        editorState.previewSegId = seg.id;
         document.querySelectorAll('.tl-segment').forEach(s => s.classList.remove('selected'));
         el.classList.add('selected');
+        updatePreviewSelection();
 
         const origRect = el.getBoundingClientRect();
         const origTrackId = track.id;
@@ -1519,12 +3240,20 @@ function createSegmentEl(seg, track) {
             if (!origTrack || !targetTrack) return;
 
             // Type enforcement
-            if (seg.mediaType === 'audio' && targetTrack.type === 'video') {
+            if (seg.mediaType === 'audio' && targetTrack.type !== 'audio') {
                 showToast('Audio clips can only go on audio tracks', 'error', '⚠️');
                 renderTracks(); return;
             }
-            if ((seg.mediaType === 'video' || seg.mediaType === 'image') && targetTrack.type === 'audio') {
+            if ((seg.mediaType === 'video' || seg.mediaType === 'image') && targetTrack.type !== 'video') {
                 showToast('Video clips can only go on video tracks', 'error', '⚠️');
+                renderTracks(); return;
+            }
+            if (seg.mediaType === 'text' && targetTrack.type !== 'text') {
+                showToast('Text clips can only go on text tracks', 'error', '⚠️');
+                renderTracks(); return;
+            }
+            if (seg.mediaType === 'effect' && targetTrack.type !== 'effect') {
+                showToast('Effects can only go on effect tracks', 'error', '⚠️');
                 renderTracks(); return;
             }
 
@@ -1565,6 +3294,14 @@ function createSegmentEl(seg, track) {
     el.addEventListener('contextmenu', e => {
         e.preventDefault();
         e.stopPropagation();
+        if (seg.mediaType === 'text') {
+            showToast('Right-click the text in preview to style it', 'info', 'ℹ️');
+            return;
+        }
+        if (seg.mediaType === 'effect') {
+            showEffectSegmentMenu(e.clientX, e.clientY, seg);
+            return;
+        }
         showSegmentMenu(e.clientX, e.clientY, seg);
     });
 
@@ -1617,18 +3354,68 @@ function createSegmentEl(seg, track) {
 }
 
 // ── Drop / Remove / AddTrack / Clear ─────────────────────────
+function ensureTextTrack() {
+    const existing = editorState.tracks.find(t => t.type === 'text');
+    if (existing) return existing;
+    const count = editorState.tracks.filter(t => t.type === 'text').length;
+    const newTrack = {
+        id: 'text-' + Date.now(),
+        type: 'text',
+        name: `Text ${count + 1}`,
+        segments: [],
+    };
+    const firstVideoIdx = editorState.tracks.findIndex(t => t.type === 'video');
+    const insertIdx = firstVideoIdx === -1 ? 0 : firstVideoIdx;
+    editorState.tracks.splice(insertIdx, 0, newTrack);
+    return newTrack;
+}
+
+function ensureEffectTrack() {
+    const existing = editorState.tracks.find(t => t.type === 'effect');
+    if (existing) return existing;
+    const count = editorState.tracks.filter(t => t.type === 'effect').length;
+    const newTrack = {
+        id: 'effect-' + Date.now(),
+        type: 'effect',
+        name: `Effect ${count + 1}`,
+        segments: [],
+    };
+    const firstAudioIdx = editorState.tracks.findIndex(t => t.type === 'audio');
+    const insertIdx = firstAudioIdx === -1 ? editorState.tracks.length : firstAudioIdx;
+    editorState.tracks.splice(insertIdx, 0, newTrack);
+    return newTrack;
+}
+
 function dropMediaOnTrack(trackId, mediaId, startTime) {
-    const track = editorState.tracks.find(t => t.id === trackId);
+    let track = editorState.tracks.find(t => t.id === trackId);
     const media = editorState.mediaItems.find(m => m.id === mediaId);
     if (!track || !media) return;
 
     // Type enforcement
-    if (media.type === 'audio' && track.type === 'video') {
+    if (media.type === 'text') {
+        if (track.type !== 'text') {
+            track = ensureTextTrack();
+        }
+    }
+    if (media.type === 'effect') {
+        if (track.type !== 'effect') {
+            track = ensureEffectTrack();
+        }
+    }
+    if (media.type === 'audio' && track.type !== 'audio') {
         showToast('Audio clips can only go on audio tracks — drop onto Audio 1 or Audio 2', 'error', '⚠️');
         return;
     }
-    if ((media.type === 'video' || media.type === 'image') && track.type === 'audio') {
+    if ((media.type === 'video' || media.type === 'image') && track.type !== 'video') {
         showToast('Video clips can only go on video tracks — drop onto Video 1 or Video 2', 'error', '⚠️');
+        return;
+    }
+    if (media.type === 'text' && track.type !== 'text') {
+        showToast('Text clips can only go on text tracks', 'error', '⚠️');
+        return;
+    }
+    if (media.type === 'effect' && track.type !== 'effect') {
+        showToast('Effects can only go on effect tracks', 'error', '⚠️');
         return;
     }
 
@@ -1644,7 +3431,28 @@ function dropMediaOnTrack(trackId, mediaId, startTime) {
         id: 'seg-' + Date.now(), mediaId, name: media.name, src: media.src,
         start: finalStart, duration: media.duration || 5, mediaType: media.type, muted: false,
         thumbDataUrl: media.thumbDataUrl || null,
+        transform: { x: 0, y: 0, scale: 1 },
     };
+    if (media.type === 'text') {
+        seg.text = media.text || 'Text';
+        seg.fontFamily = media.fontFamily;
+        seg.fontSize = media.fontSize;
+        seg.fontWeight = media.fontWeight;
+        seg.fontStyle = media.fontStyle;
+        seg.color = media.color;
+        seg.align = media.align;
+        seg.bgColor = media.bgColor;
+        seg.padding = media.padding;
+        seg.lineHeight = media.lineHeight;
+        seg.letterSpacing = media.letterSpacing;
+        seg.underline = !!media.underline;
+        seg.boxW = media.boxW ?? null;
+        seg.boxH = media.boxH ?? null;
+        seg.presetKey = media.presetKey || null;
+    }
+    if (media.type === 'effect') {
+        seg.effectKey = media.effectKey || null;
+    }
     track.segments.push(seg);
     renderTimeline();
     showToast(`Added "${media.name}" to ${track.name}`, 'info', '✂️');
@@ -1667,10 +3475,23 @@ function addTrack(type) {
         id: type + '-' + Date.now(), type,
         name: `${type === 'video' ? 'Video' : 'Audio'} ${count + 1}`, segments: []
     };
-    const lastIdx = [...editorState.tracks].map((t, i) => t.type === type ? i : -1).filter(i => i >= 0).pop();
-    if (lastIdx === undefined) editorState.tracks.push(newTrack);
-    else editorState.tracks.splice(lastIdx + 1, 0, newTrack);
+    if (type === 'text') {
+        newTrack.name = `Text ${count + 1}`;
+        const firstVideoIdx = editorState.tracks.findIndex(t => t.type === 'video');
+        const insertIdx = firstVideoIdx === -1 ? 0 : firstVideoIdx;
+        editorState.tracks.splice(insertIdx, 0, newTrack);
+    } else if (type === 'effect') {
+        newTrack.name = `Effect ${count + 1}`;
+        const firstAudioIdx = editorState.tracks.findIndex(t => t.type === 'audio');
+        const insertIdx = firstAudioIdx === -1 ? editorState.tracks.length : firstAudioIdx;
+        editorState.tracks.splice(insertIdx, 0, newTrack);
+    } else {
+        const lastIdx = [...editorState.tracks].map((t, i) => t.type === type ? i : -1).filter(i => i >= 0).pop();
+        if (lastIdx === undefined) editorState.tracks.push(newTrack);
+        else editorState.tracks.splice(lastIdx + 1, 0, newTrack);
+    }
     renderTimeline();
+    return newTrack;
 }
 
 function clearTimeline() {
@@ -1699,9 +3520,11 @@ function stopPlayback() {
     const btn = eq('tl-play-pause');
     btn.classList.remove('playing');
     btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><polygon points="5,3 19,12 5,21" fill="currentColor"/></svg>';
-    // Pause preview video
-    const vid = eq('preview-video');
-    if (vid && !vid.paused) vid.pause();
+    // Pause preview videos
+    const layers = eq('preview-layers');
+    layers?.querySelectorAll('video').forEach(v => {
+        try { if (!v.paused) v.pause(); } catch { }
+    });
     // Pause ALL audio segment elements immediately
     editorState.tracks.forEach(track => {
         track.segments.forEach(seg => {
@@ -1744,82 +3567,36 @@ function seekTo(t) {
 }
 
 function updatePreviewForTime(t) {
-    let found = null;
-    let hasAnyVideo = false;
-    for (const track of editorState.tracks) {
-        if (track.type !== 'video') continue;
-        if (track.segments.length) hasAnyVideo = true;
-        for (const seg of track.segments) {
-            if (t >= seg.start && t < seg.start + seg.duration) { found = seg; break; }
-        }
-        if (found) break;
-    }
-    const vid = eq('preview-video');
-    const img = eq('preview-image');
     const emptyEl = eq('preview-empty');
-    if (found?.src) {
-        const opacity = String(getTransitionOpacity(found, t));
-        emptyEl.style.display = 'none';
-        if (found.mediaType === 'image') {
-            if (!vid.paused) vid.pause();
-            vid.classList.remove('active');
-            vid.style.opacity = '1';
-            img.classList.add('active');
-            img.style.opacity = opacity;
-            if (img.dataset.src !== found.src) { img.dataset.src = found.src; img.src = found.src; }
-            editorState.previewType = 'image';
-            editorState.previewOpacity = Number(opacity);
-        } else {
-            const media = found.mediaId ? editorState.mediaItems.find(m => m.id === found.mediaId) : null;
-            const rawSrc = media?.src || found.src;
-            const src = editorState.exporting ? getExportSrc(rawSrc) : maybeProxySrc(rawSrc);
-            img.classList.remove('active');
-            img.style.opacity = '1';
-            vid.classList.add('active');
-            if (vid.dataset.src !== src) {
-                vid.dataset.src = src;
-                vid.src = src;
-                vid.onerror = async () => {
-                    if (found.mediaId && window.refreshJobVideoUrl) {
-                        const fresh = await window.refreshJobVideoUrl(found.mediaId, { silent: true });
-                        if (fresh) {
-                            const proxied = editorState.exporting ? getExportSrc(fresh) : maybeProxySrc(fresh);
-                            vid.dataset.src = proxied;
-                            vid.src = proxied;
-                            try { vid.load(); } catch { }
-                            return;
-                        }
-                    }
-                };
+    const hasAnyVideo = editorState.tracks.some(tk => tk.type === 'video' && tk.segments.length);
+    const layers = getActiveVideoSegmentsAtTime(t);
+    updatePreviewEffects(t);
+
+    if (layers.length) {
+        layers.forEach(layer => {
+            if (layer.seg.mediaType === 'video') {
+                prefetchVideoSegment(layer.seg);
+                const nextSeg = getNextVideoSegment(t);
+                if (nextSeg && nextSeg.start - t <= 3) prefetchVideoSegment(nextSeg);
             }
-            vid.muted = !!found.muted;
-            vid.style.opacity = opacity;
-            const segTime = t - found.start;
-            if (Math.abs(vid.currentTime - segTime) > 0.3) vid.currentTime = segTime;
-            if (editorState.playing && vid.paused) vid.play().catch(() => { });
-            if (!editorState.playing && !vid.paused) vid.pause();
-            editorState.previewType = 'video';
-            editorState.previewOpacity = Number(opacity);
+        });
+        emptyEl.style.display = 'none';
+        renderPreviewLayers(layers, t);
+        const top = layers.slice().sort((a, b) => a.trackIndex - b.trackIndex)[0];
+        if (!layers.find(l => l.seg.id === editorState.previewSegId)) {
+            editorState.previewSegId = top?.seg.id || null;
         }
+        editorState.previewOpacity = 1;
     } else {
-        if (!vid.paused) vid.pause();
-        vid.muted = false;
-        img.classList.remove('active');
-        img.style.opacity = '1';
+        clearPreviewLayers();
         if (hasAnyVideo) {
-            // Gap between clips: keep preview black
-            vid.classList.add('active');
-            vid.style.opacity = '0';
             emptyEl.style.display = 'none';
-            editorState.previewType = null;
             editorState.previewOpacity = 0;
         } else {
-            vid.classList.remove('active');
-            vid.style.opacity = '1';
             emptyEl.style.display = 'flex';
-            editorState.previewType = null;
             editorState.previewOpacity = 1;
         }
+        editorState.previewSegId = null;
     }
 
     // Sync audio segments
@@ -1886,20 +3663,13 @@ async function startExport() {
     }
     editorState.exportEnd = Math.max(...videoSegs.map(s => s.start + s.duration));
 
-    const vid = eq('preview-video');
-    if (!vid || typeof vid.captureStream !== 'function') {
-        showToast('Export not supported in this browser. Use Chrome or Edge.', 'error', '❌');
-        return;
-    }
-    // Ensure the preview video is ready if the first segment is a video
-    const firstSeg = videoSegs[0];
-    if (firstSeg?.mediaType === 'video') {
-        const ready = await ensurePreviewReady(vid, firstSeg);
-        if (!ready) return;
-    }
     let stream;
     try {
-        const { canvas } = ensureExportCanvas(vid);
+        const { canvas } = ensureExportCanvas();
+        if (typeof canvas.captureStream !== 'function') {
+            showToast('Export not supported in this browser. Use Chrome or Edge.', 'error', '❌');
+            return;
+        }
         stream = canvas.captureStream(30);
     } catch (e) {
         showToast('Export failed to capture the export stream', 'error', '❌');
@@ -1996,36 +3766,6 @@ async function startExport() {
     }, 200);
 }
 
-async function ensurePreviewReady(vid, firstVid) {
-    const src = firstVid?.src ? getExportSrc(firstVid.src) : null;
-    if (src && vid.dataset.src !== src) {
-        vid.dataset.src = src;
-        vid.src = src;
-    }
-    // Ensure metadata is loaded so captureStream has tracks
-    if (vid.readyState < 2) {
-        const ok = await new Promise(resolve => {
-            const done = (v) => {
-                vid.removeEventListener('loadedmetadata', onReady);
-                vid.removeEventListener('canplay', onReady);
-                vid.removeEventListener('error', onError);
-                resolve(v);
-            };
-            const onReady = () => done(true);
-            const onError = () => done(false);
-            vid.addEventListener('loadedmetadata', onReady, { once: true });
-            vid.addEventListener('canplay', onReady, { once: true });
-            vid.addEventListener('error', onError, { once: true });
-            try { vid.load(); } catch { }
-        });
-        if (!ok) {
-            showToast('Preview video failed to load. Try reloading or re-adding the clip.', 'error', '❌');
-            return false;
-        }
-    }
-    return true;
-}
-
 function showExportDownload(url, filename) {
     const wrap = document.createElement('div');
     wrap.className = 'export-download';
@@ -2098,19 +3838,27 @@ function openExportWindow(stream) {
     return win;
 }
 
-function ensureExportCanvas(vid) {
+function ensureExportCanvas() {
     if (editorState.exportCanvas && editorState.exportCtx) {
         return { canvas: editorState.exportCanvas, ctx: editorState.exportCtx };
     }
     const canvas = document.createElement('canvas');
-    const w = vid?.videoWidth || 1280;
-    const h = vid?.videoHeight || 720;
-    canvas.width = w;
-    canvas.height = h;
+    const size = getExportCanvasSize();
+    canvas.width = size.width;
+    canvas.height = size.height;
     const ctx = canvas.getContext('2d');
     editorState.exportCanvas = canvas;
     editorState.exportCtx = ctx;
     return { canvas, ctx };
+}
+
+function getExportCanvasSize() {
+    const ratio = parseRatio(editorState.previewRatio || '16:9').value;
+    const base = 1280;
+    if (ratio >= 1) {
+        return { width: base, height: Math.round(base / ratio) };
+    }
+    return { width: Math.round(base * ratio), height: base };
 }
 
 function renderExportFrame() {
@@ -2121,31 +3869,77 @@ function renderExportFrame() {
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    const opacity = editorState.previewOpacity ?? 1;
-    if (!editorState.previewType || opacity <= 0) return;
+    const layers = getActiveVideoSegmentsAtTime(editorState.currentTime || 0);
+    if (!layers.length) return;
+    const ordered = layers.slice().sort((a, b) => b.trackIndex - a.trackIndex);
+    ordered.forEach(layer => {
+        const seg = layer.seg;
+        const opacity = getTransitionOpacity(seg, editorState.currentTime || 0);
+        if (opacity <= 0) return;
+        if (seg.mediaType === 'text') {
+            const t = getSegmentTransform(seg);
+            const style = getTextStyle(seg);
+            const fontFamily = resolveFontFamily(style.fontFamily);
+            const lineHeight = style.fontSize * style.lineHeight;
+            const lines = String(style.text || '').split('\n');
+            ctx.save();
+            ctx.globalAlpha = opacity;
+            ctx.translate(canvas.width / 2 + (t.x || 0) * canvas.width, canvas.height / 2 + (t.y || 0) * canvas.height);
+            ctx.scale(t.scale || 1, t.scale || 1);
+            ctx.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize}px ${fontFamily}`;
+            ctx.textAlign = style.align;
+            ctx.textBaseline = 'middle';
+            const widths = lines.map(line => ctx.measureText(line).width);
+            const maxW = widths.length ? Math.max(...widths) : 0;
+            const totalH = lines.length ? (lines.length - 1) * lineHeight : 0;
+            let bgX = -style.padding;
+            if (style.align === 'center') bgX = -maxW / 2 - style.padding;
+            if (style.align === 'right') bgX = -maxW - style.padding;
+            const bgY = -totalH / 2 - style.padding;
+            if (style.bgColor && style.bgColor !== 'transparent') {
+                ctx.fillStyle = style.bgColor;
+                ctx.fillRect(bgX, bgY, maxW + style.padding * 2, totalH + style.padding * 2);
+            }
+            ctx.fillStyle = style.color;
+            const startY = -totalH / 2;
+            lines.forEach((line, i) => {
+                ctx.fillText(line, 0, startY + i * lineHeight);
+                if (style.underline) {
+                    const w = ctx.measureText(line).width;
+                    let lx = 0;
+                    if (style.align === 'center') lx = -w / 2;
+                    if (style.align === 'right') lx = -w;
+                    const ly = startY + i * lineHeight + style.fontSize * 0.38;
+                    ctx.strokeStyle = style.color;
+                    ctx.lineWidth = Math.max(1, style.fontSize / 18);
+                    ctx.beginPath();
+                    ctx.moveTo(lx, ly);
+                    ctx.lineTo(lx + w, ly);
+                    ctx.stroke();
+                }
+            });
+            ctx.restore();
+            return;
+        }
 
-    const sourceEl = editorState.previewType === 'image'
-        ? eq('preview-image')
-        : eq('preview-video');
-    if (!sourceEl) return;
-
-    const sw = editorState.previewType === 'image'
-        ? (sourceEl.naturalWidth || canvas.width)
-        : (sourceEl.videoWidth || canvas.width);
-    const sh = editorState.previewType === 'image'
-        ? (sourceEl.naturalHeight || canvas.height)
-        : (sourceEl.videoHeight || canvas.height);
-
-    const scale = Math.min(canvas.width / sw, canvas.height / sh);
-    const dw = sw * scale;
-    const dh = sh * scale;
-    const dx = (canvas.width - dw) / 2;
-    const dy = (canvas.height - dh) / 2;
-
-    ctx.save();
-    ctx.globalAlpha = opacity;
-    try { ctx.drawImage(sourceEl, dx, dy, dw, dh); } catch { }
-    ctx.restore();
+        const el = document.querySelector(`.preview-layer[data-seg-id="${seg.id}"]`);
+        if (!el) return;
+        const isImage = seg.mediaType === 'image';
+        const sw = isImage ? (el.naturalWidth || 0) : (el.videoWidth || 0);
+        const sh = isImage ? (el.naturalHeight || 0) : (el.videoHeight || 0);
+        if (!sw || !sh) return;
+        const t = getSegmentTransform(seg);
+        const baseScale = Math.min(canvas.width / sw, canvas.height / sh);
+        const scale = baseScale * (t.scale || 1);
+        const dw = sw * scale;
+        const dh = sh * scale;
+        const dx = (canvas.width - dw) / 2 + (t.x || 0) * canvas.width;
+        const dy = (canvas.height - dh) / 2 + (t.y || 0) * canvas.height;
+        ctx.save();
+        ctx.globalAlpha = opacity;
+        try { ctx.drawImage(el, dx, dy, dw, dh); } catch { }
+        ctx.restore();
+    });
 }
 
 async function exportMp4FromServer(blob) {
@@ -2170,6 +3964,18 @@ async function exportMp4FromServer(blob) {
 document.addEventListener('keydown', e => {
     if (!document.getElementById('page-editor') || document.getElementById('page-editor').classList.contains('hidden')) return;
     if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+    const isMod = e.metaKey || e.ctrlKey;
+    const key = String(e.key || '').toLowerCase();
+    if (isMod && key === 'c') {
+        e.preventDefault();
+        copySelectedSegment();
+        return;
+    }
+    if (isMod && key === 'v') {
+        e.preventDefault();
+        pasteClipboardSegment();
+        return;
+    }
     if (e.code === 'Space') { e.preventDefault(); togglePlayback(); }
     if (e.code === 'Home') { e.preventDefault(); seekTo(0); }
     if (e.code === 'KeyM' && editorState.selectedSegId) {
@@ -2190,6 +3996,9 @@ document.addEventListener('keydown', e => {
         }
     }
 });
+
+// Bind header buttons on load (even if editor tab isn't opened yet)
+bindHeaderProjectButtons();
 
 // ── Helpers ───────────────────────────────────────────────────
 function formatDur(s) {

@@ -7,6 +7,7 @@ import net from 'net';
 import os from 'os';
 import { pipeline } from 'stream/promises';
 import { createGunzip } from 'zlib';
+import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -91,6 +92,23 @@ function sendJson(res, status, payload) {
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Length', body.length);
   res.end(body);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+function sanitizeProjectName(name) {
+  const base = String(name || '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const safe = base || `vibedstudio-${Date.now()}`;
+  return safe.endsWith('.svs') ? safe : `${safe}.svs`;
 }
 
 function proxyRequest(req, res, url) {
@@ -288,6 +306,63 @@ async function handleExportRequest(req, res) {
   stream.pipe(res);
 }
 
+async function handleProjectSave(req, res, rootDir) {
+  try {
+    const body = await readBody(req);
+    const payload = JSON.parse(body.toString('utf-8'));
+    const project = payload?.project ?? payload;
+    if (!project || typeof project !== 'object') {
+      sendJson(res, 400, { error: 'missing_project' });
+      return;
+    }
+    const name = sanitizeProjectName(payload?.name);
+    const dir = path.join(rootDir, 'projects');
+    await fs.promises.mkdir(dir, { recursive: true });
+    const data = Buffer.from(JSON.stringify(project));
+    const packed = zlib.gzipSync(data);
+    await fs.promises.writeFile(path.join(dir, name), packed);
+    sendJson(res, 200, { ok: true, name });
+  } catch (err) {
+    sendJson(res, 500, { error: 'save_failed', message: err?.message || String(err) });
+  }
+}
+
+async function handleProjectList(req, res, rootDir) {
+  try {
+    const dir = path.join(rootDir, 'projects');
+    await fs.promises.mkdir(dir, { recursive: true });
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    const projects = await Promise.all(entries
+      .filter(ent => ent.isFile() && ent.name.endsWith('.svs'))
+      .map(async ent => {
+        const stat = await fs.promises.stat(path.join(dir, ent.name));
+        return { name: ent.name, size: stat.size, mtime: stat.mtimeMs };
+      }));
+    projects.sort((a, b) => b.mtime - a.mtime);
+    sendJson(res, 200, { projects });
+  } catch (err) {
+    sendJson(res, 500, { error: 'list_failed', message: err?.message || String(err) });
+  }
+}
+
+async function handleProjectLoad(req, res, rootDir, parsed) {
+  try {
+    const name = sanitizeProjectName(parsed.searchParams.get('name') || '');
+    const dir = path.join(rootDir, 'projects');
+    const filePath = path.join(dir, name);
+    if (!fs.existsSync(filePath)) {
+      sendJson(res, 404, { error: 'not_found' });
+      return;
+    }
+    const packed = await fs.promises.readFile(filePath);
+    const data = zlib.gunzipSync(packed);
+    const project = JSON.parse(data.toString('utf-8'));
+    sendJson(res, 200, project);
+  } catch (err) {
+    sendJson(res, 500, { error: 'load_failed', message: err?.message || String(err) });
+  }
+}
+
 async function startServer() {
   const rootDir = path.join(__dirname, '..');
   log(`Server starting, rootDir=${rootDir}`);
@@ -314,6 +389,36 @@ async function startServer() {
       handleExportRequest(req, res).catch(err => {
         sendJson(res, 502, { error: 'ffmpeg_failed', message: err.message });
       });
+      return;
+    }
+
+    if (parsed.pathname === '/api/project/save') {
+      if (method !== 'POST') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      handleProjectSave(req, res, rootDir);
+      return;
+    }
+
+    if (parsed.pathname === '/api/project/list') {
+      if (method !== 'GET') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      handleProjectList(req, res, rootDir);
+      return;
+    }
+
+    if (parsed.pathname === '/api/project/load') {
+      if (method !== 'GET') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      handleProjectLoad(req, res, rootDir, parsed);
       return;
     }
 

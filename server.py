@@ -4,16 +4,34 @@ Minimal CORS-aware dev server for VibedStudio.
 Run: python3 server.py
 Then open: http://localhost:8080
 """
-import http.server, socketserver, os, sys, json, urllib.request, urllib.error, urllib.parse, tempfile, subprocess, shutil
+import http.server, socketserver, os, sys, json, urllib.request, urllib.error, urllib.parse, tempfile, subprocess, shutil, gzip, re, time
 
 PORT = 8787
 IMAGE_PROXY_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3/images/generations'
 ARK_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3'
+PROJECT_DIR = os.path.join(os.getcwd(), 'projects')
+
+def ensure_project_dir():
+    os.makedirs(PROJECT_DIR, exist_ok=True)
+
+def safe_project_name(name):
+    base = re.sub(r'[^a-zA-Z0-9_-]+', '-', name or '').strip('-')
+    if not base:
+        base = f'vibedstudio-{int(time.time())}'
+    if not base.endswith('.svs'):
+        base += '.svs'
+    return base
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith('/api/ark/'):
             self.handle_ark_proxy('GET')
+            return
+        if self.path.startswith('/api/project/list'):
+            self.handle_project_list()
+            return
+        if self.path.startswith('/api/project/load'):
+            self.handle_project_load()
             return
         if self.path.startswith('/api/thumb'):
             self.handle_thumb()
@@ -47,6 +65,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if self.path == '/api/export':
             self.handle_export()
+            return
+        if self.path == '/api/project/save':
+            self.handle_project_save()
             return
         if self.path.startswith('/api/ark/'):
             self.handle_ark_proxy('POST')
@@ -375,6 +396,115 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 'error': 'ffmpeg_timeout',
                 'message': 'ffmpeg timed out while generating thumbnail.',
             }).encode('utf-8'))
+
+    def handle_project_save(self):
+        ensure_project_dir()
+        length = int(self.headers.get('Content-Length', 0))
+        if length <= 0:
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'empty_body'}).encode('utf-8'))
+            return
+        try:
+            body = self.rfile.read(length)
+            payload = json.loads(body.decode('utf-8'))
+        except Exception as e:
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'invalid_json', 'message': str(e)}).encode('utf-8'))
+            return
+
+        project = payload.get('project') if isinstance(payload, dict) else None
+        name = payload.get('name') if isinstance(payload, dict) else None
+        if project is None and isinstance(payload, dict):
+            project = payload
+        if project is None:
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'missing_project'}).encode('utf-8'))
+            return
+
+        safe_name = safe_project_name(name or '')
+        path = os.path.join(PROJECT_DIR, safe_name)
+        try:
+            data = json.dumps(project).encode('utf-8')
+            packed = gzip.compress(data)
+            with open(path, 'wb') as f:
+                f.write(packed)
+        except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'save_failed', 'message': str(e)}).encode('utf-8'))
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({'ok': True, 'name': safe_name}).encode('utf-8'))
+
+    def handle_project_list(self):
+        ensure_project_dir()
+        try:
+            entries = []
+            for name in os.listdir(PROJECT_DIR):
+                if not name.endswith('.svs'):
+                    continue
+                path = os.path.join(PROJECT_DIR, name)
+                try:
+                    stat = os.stat(path)
+                    entries.append({
+                        'name': name,
+                        'size': stat.st_size,
+                        'mtime': stat.st_mtime,
+                    })
+                except Exception:
+                    continue
+            entries.sort(key=lambda x: x.get('mtime', 0), reverse=True)
+        except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'list_failed', 'message': str(e)}).encode('utf-8'))
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({'projects': entries}).encode('utf-8'))
+
+    def handle_project_load(self):
+        ensure_project_dir()
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        name = params.get('name', [''])[0]
+        safe_name = safe_project_name(name)
+        path = os.path.join(PROJECT_DIR, safe_name)
+        if not os.path.exists(path):
+            self.send_response(404)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'not_found'}).encode('utf-8'))
+            return
+        try:
+            with open(path, 'rb') as f:
+                packed = f.read()
+            data = gzip.decompress(packed)
+            project = json.loads(data.decode('utf-8'))
+        except Exception as e:
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'load_failed', 'message': str(e)}).encode('utf-8'))
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(project).encode('utf-8'))
 
     def log_message(self, fmt, *args):
         pass  # suppress request noise

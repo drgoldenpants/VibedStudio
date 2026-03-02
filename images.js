@@ -85,6 +85,50 @@ window.initImages = async function initImages() {
     await loadImagesFromDB();
 };
 
+window.applyImageHistory = function applyImageHistory(records) {
+    const grid = document.getElementById('img-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    imgState.count = 0;
+    const list = Array.isArray(records) ? records.slice() : [];
+    list.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    list.forEach(r => {
+        const record = { ...r };
+        if (!record.blob && record.blobBase64 && typeof dataUrlToBlob === 'function') {
+            try { record.blob = dataUrlToBlob(record.blobBase64); } catch { record.blob = null; }
+        }
+        if (record.blob && !record.blobUrl) record.blobUrl = URL.createObjectURL(record.blob);
+        if (!record.blobUrl) record.blobUrl = record.url;
+        renderSavedImageCard(record);
+        imgState.count++;
+    });
+    const badge = document.getElementById('img-count-badge');
+    if (badge) badge.textContent = imgState.count;
+    updateImgEmptyState();
+};
+
+window.applyImageGeneratorState = function applyImageGeneratorState(state) {
+    if (!state) return;
+    if (state.model) imgState.model = state.model;
+    if (state.size) imgState.size = state.size;
+    if (state.format) imgState.format = state.format;
+    renderImgModelGrid();
+    updateSizeButtons();
+    document.querySelectorAll('.img-size-btn').forEach(btn => {
+        btn.classList.toggle('selected', btn.dataset.size === imgState.size);
+    });
+    document.querySelectorAll('.img-format-btn').forEach(btn => {
+        btn.classList.toggle('selected', btn.dataset.format === imgState.format);
+    });
+    const promptEl = document.getElementById('img-prompt');
+    if (promptEl && typeof state.promptText === 'string') {
+        promptEl.value = state.promptText;
+        const countEl = document.getElementById('img-char-count');
+        if (countEl) countEl.textContent = promptEl.value.length;
+    }
+    updateImgJsonPreview();
+};
+
 // ── Model grid ────────────────────────────────────────────────
 function renderImgModelGrid() {
     const grid = document.getElementById('img-model-grid');

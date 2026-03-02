@@ -57,7 +57,6 @@ const resolutionGrid = $('resolution-grid');
 const returnLastFrameChk = $('return-last-frame');
 const serviceTierRow = $('service-tier-row');
 const genAudioChk = $('gen-audio');
-const watermarkChk = $('watermark');
 const cameraFixedChk = $('camera-fixed');
 const seedInput = $('seed-input');
 const seedDisplay = $('seed-display');
@@ -614,7 +613,7 @@ async function saveVideoJob(job, blob) {
     lastFrameDataUrl: job.lastFrameDataUrl || null,
     referenceImages: job.referenceImages || [],
     generateAudio: !!job.generateAudio,
-    watermark: !!job.watermark,
+    watermark: false,
     prompt: job.prompt,
     model: job.model,
     ratio: job.ratio,
@@ -837,7 +836,7 @@ async function importVideoHistory(file) {
       firstFrameDataUrl: v.firstFrameDataUrl || null,
       lastFrameDataUrl: v.lastFrameDataUrl || null,
       generateAudio: !!v.generateAudio,
-      watermark: !!v.watermark,
+      watermark: false,
       timestamp: v.timestamp || new Date().toISOString(),
     };
     await dbPut('videos', record).catch(() => { });
@@ -1291,10 +1290,6 @@ if (serviceTierRow) {
 // ── Toggles ───────────────────────────────────────────────────
 genAudioChk.addEventListener('change', () => {
   state.generateAudio = genAudioChk.checked;
-  updateJsonPreview();
-});
-watermarkChk.addEventListener('change', () => {
-  state.watermark = watermarkChk.checked;
   updateJsonPreview();
 });
 if (cameraFixedChk) {
@@ -1957,7 +1952,7 @@ function applyJobToForm(job) {
   if (job.resolution) state.resolution = job.resolution;
   if (job.serviceTier) state.serviceTier = job.serviceTier;
   if (job.generateAudio != null) state.generateAudio = !!job.generateAudio;
-  if (job.watermark != null) state.watermark = !!job.watermark;
+  state.watermark = false;
   if (job.returnLastFrame != null) state.returnLastFrame = !!job.returnLastFrame;
   if (job.cameraFixed != null) state.cameraFixed = !!job.cameraFixed;
   if (job.seed !== undefined) state.seed = job.seed ?? null;
@@ -2009,7 +2004,6 @@ function applyJobToForm(job) {
   }
   if (returnLastFrameChk) returnLastFrameChk.checked = state.returnLastFrame;
   if (genAudioChk) genAudioChk.checked = state.generateAudio;
-  if (watermarkChk) watermarkChk.checked = state.watermark;
   if (cameraFixedChk) cameraFixedChk.checked = state.cameraFixed;
   if (seedInput) seedInput.value = state.seed == null ? '' : String(state.seed);
   if (seedDisplay) seedDisplay.textContent = state.seed == null ? 'Random' : String(state.seed);
@@ -2019,6 +2013,9 @@ function applyJobToForm(job) {
   scheduleTokenization(imagePromptTxt.value, 'image');
   if (referencePromptEditor) scheduleTokenization(getReferencePromptText(), 'reference');
 }
+
+window.applyJobToForm = applyJobToForm;
+window.setReferencePromptFromText = setReferencePromptFromText;
 
 function retryFromJob(jobId) {
   const job = state.jobs.find(j => j.id === jobId);
@@ -2075,7 +2072,7 @@ function buildPayload() {
     ratio: state.ratio,
     duration: state.duration,
     generate_audio: state.generateAudio,
-    watermark: state.watermark,
+    watermark: false,
   };
 }
 
@@ -2124,7 +2121,7 @@ async function handleGenerate() {
     returnLastFrame: state.returnLastFrame,
     serviceTier: state.serviceTier,
     generateAudio: state.generateAudio,
-    watermark: state.watermark,
+    watermark: false,
     cameraFixed: state.cameraFixed,
     seed: state.seed,
     mode: state.mode,
@@ -2248,7 +2245,7 @@ function createPlaceholderJob(jobConfig) {
     lastFrameDataUrl: jobConfig.lastFrameDataUrl,
     referenceImages: jobConfig.referenceImages || [],
     generateAudio: jobConfig.generateAudio,
-    watermark: jobConfig.watermark,
+    watermark: false,
     tokensEstimate: jobConfig.tokensEstimate ?? null,
     lastFrameUrl: jobConfig.lastFrameUrl || null,
     cameraFixed: !!jobConfig.cameraFixed,
@@ -2285,7 +2282,7 @@ async function submitGeneration(jobConfig, { focusOnError = false, skipValidatio
     if (jobConfig.cameraFixed) body.camera_fixed = true;
     if (jobConfig.seed != null) body.seed = jobConfig.seed;
   }
-  body.watermark = jobConfig.watermark;
+  body.watermark = false;
   if (jobConfig.draft) {
     body.draft = true;
     body.resolution = '480p';
@@ -2363,7 +2360,7 @@ async function submitGeneration(jobConfig, { focusOnError = false, skipValidatio
     lastFrameDataUrl: jobConfig.lastFrameDataUrl,
     referenceImages: jobConfig.referenceImages || [],
     generateAudio: jobConfig.generateAudio,
-    watermark: jobConfig.watermark,
+    watermark: false,
     tokensEstimate: jobConfig.tokensEstimate ?? null,
     lastFrameUrl: jobConfig.lastFrameUrl || null,
     cameraFixed: !!jobConfig.cameraFixed,
@@ -2411,7 +2408,7 @@ function buildFallbackJob(taskId, status, videoUrl) {
     lastFrameDataUrl: state.lastFrameDataUrl,
     referenceImages: state.referenceImages || [],
     generateAudio: state.generateAudio,
-    watermark: state.watermark,
+    watermark: false,
     cameraFixed: state.cameraFixed,
     seed: state.seed,
   };
@@ -2818,7 +2815,7 @@ function makeOfficialFromJob(job) {
     returnLastFrame: state.returnLastFrame,
     serviceTier: state.serviceTier,
     generateAudio: job.generateAudio ?? state.generateAudio,
-    watermark: job.watermark ?? state.watermark,
+    watermark: false,
     mode: 'draft_task',
     draftTaskId: job.id,
     draft: false,

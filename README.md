@@ -1,19 +1,48 @@
 # Vibed Studio
+![Video generation view](screenshots/generation.png)
+![Editor view](screenshots/editor.png)
 
- Vibed Studio is a lightweight, local-first UI for generating and managing AI videos and images with BytePlus. It runs entirely in the browser and stores history locally (IndexedDB), with an optional dev server for CORS-safe image generation and editor access.
-
-## Live Demo
-Once GitHub Pages is enabled for this repo, you can launch the app here:
-https://drgoldenpants.github.io/VibedStudio/
-
+ Vibed Studio is a lightweight, local-first UI for generating and managing AI videos and images with BytePlus. It runs entirely in the browser and stores all files locally.
+ 
 ## Features
-- Video generation (text or image prompt)
+- Video generation (Seedance models)
 - Image generation (Seedream models)
 - Local history for videos and images
 - JSON request/response previews
-- Optional dev server with CORS proxy for image generation
+- Basic Video Editing Tool 
 
-## Quick Start
+
+## Install From Release (macOS / Windows / Linux)
+Open the latest GitHub Release and download the installer for your OS:
+
+### macOS
+1. Download the `.dmg`
+2. Open it and drag **VibedStudio.app** into **Applications**
+3. If macOS blocks it:
+   - Right‑click the app → **Open** → **Open**
+   - Or run:
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/VibedStudio.app
+     ```
+
+### Windows
+1. Download the `.exe` installer
+2. Run the installer and follow the prompts
+3. If SmartScreen appears, choose **More info → Run anyway**
+
+### Linux
+1. Download the `.AppImage`
+2. Make it executable:
+   ```bash
+   chmod +x VibedStudio-*.AppImage
+   ```
+3. Run it:
+   ```bash
+   ./VibedStudio-*.AppImage
+   ```
+
+
+## Quick Start Using LocalHost
 ### 1) Open in the browser
 You can open the app directly:
 - Double-click `index.html`
@@ -33,9 +62,6 @@ http://localhost:8787
 ### 3) Set your API key
 Click the key icon in the header and paste your BytePlus API key. The key is stored in `localStorage` on your machine.
 
-## Screenshots
-![Video generation view](screenshots/generation.png)
-![Editor view](screenshots/editor.png)
 
 ## Desktop App (One‑Click Installers)
 You can ship VibedStudio as a native app for macOS, Windows, and Linux.

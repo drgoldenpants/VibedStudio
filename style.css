@@ -192,6 +192,27 @@ select {
   align-items: center;
   gap: 12px;
   margin-left: auto;
+  pointer-events: auto;
+}
+
+.header-btn {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  color: #e5e7eb;
+  background: rgba(30, 41, 59, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  transition: all var(--transition);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.header-btn:hover {
+  color: #ffffff;
+  background: rgba(51, 65, 85, 0.9);
+  border-color: rgba(148, 163, 184, 0.75);
 }
 
 .server-help-btn {
