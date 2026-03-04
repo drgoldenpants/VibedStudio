@@ -8,8 +8,9 @@
  
 ## Features
 - Video generation (Seedance models)
-- Image generation (Seedream models)
-- Local history for videos and images
+- Image generation (Seedream models, OpenAI models)
+- Audio generation (Sunoauto models)
+- Local history for images, videos, audio 
 - JSON request/response previews
 - Basic Video Editing Tool 
 
