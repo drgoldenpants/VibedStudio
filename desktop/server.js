@@ -8,6 +8,7 @@ import os from 'os';
 import { pipeline } from 'stream/promises';
 import { createGunzip } from 'zlib';
 import zlib from 'zlib';
+import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -84,12 +85,14 @@ async function ensureFfmpeg({ allowDownload }) {
 }
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+const IMAGE_PROXY_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3/images/generations';
 const ARK_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3';
 const OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/generations';
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const SONAUTO_BASE_URL = 'https://api.sonauto.ai/v1';
 const SONAUTO_PROXY_TIMEOUT_MS = 90000;
 const SONAUTO_PROXY_RETRIES = 3;
+const IMAGE_HISTORY_LIMIT = 200;
 
 function sendJson(res, status, payload) {
   const body = Buffer.from(JSON.stringify(payload));
@@ -114,6 +117,96 @@ function sanitizeProjectName(name) {
     .replace(/^-+|-+$/g, '');
   const safe = base || `vibedstudio-${Date.now()}`;
   return safe.endsWith('.svs') ? safe : `${safe}.svs`;
+}
+
+function extractBearerToken(authHeader) {
+  const value = String(authHeader || '').trim();
+  if (!value) return '';
+  if (value.toLowerCase().startsWith('bearer ')) return value.slice(7).trim();
+  return value;
+}
+
+function getImageHistoryPath(rootDir, authHeader, provider) {
+  const token = extractBearerToken(authHeader);
+  if (!token) return null;
+  const digest = createHash('sha256').update(token).digest('hex').slice(0, 16);
+  const safeProvider = String(provider || 'image').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+  return path.join(rootDir, 'projects', `image-history-${safeProvider}-${digest}.json`);
+}
+
+async function loadImageHistory(rootDir, authHeader, provider) {
+  const filePath = getImageHistoryPath(rootDir, authHeader, provider);
+  if (!filePath) return [];
+  try {
+    const raw = await fs.promises.readFile(filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.images) ? parsed.images : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveImageHistory(rootDir, authHeader, provider, images) {
+  const filePath = getImageHistoryPath(rootDir, authHeader, provider);
+  if (!filePath) return;
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.promises.writeFile(
+    filePath,
+    JSON.stringify({ images: (Array.isArray(images) ? images : []).slice(-IMAGE_HISTORY_LIMIT) }),
+    'utf8'
+  );
+}
+
+function extractImageUrls(payload) {
+  const urls = [];
+  const walk = value => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+    if (typeof value !== 'object') return;
+    Object.entries(value).forEach(([key, entry]) => {
+      if ((key === 'url' || key === 'image_url') && typeof entry === 'string') {
+        urls.push(entry);
+        return;
+      }
+      walk(entry);
+    });
+  };
+  walk(payload);
+  return [...new Set(urls)];
+}
+
+async function storeImageHistory(rootDir, authHeader, provider, requestPayload, responsePayload) {
+  if (!authHeader) return;
+  const urls = extractImageUrls(responsePayload);
+  if (!urls.length) return;
+  const history = await loadImageHistory(rootDir, authHeader, provider);
+  const existing = new Set(history.map(item => item?.url).filter(Boolean));
+  const prompt = requestPayload?.prompt || '';
+  const model = requestPayload?.model || '';
+  const size = requestPayload?.size || '';
+  const format = requestPayload?.output_format || requestPayload?.format || '';
+  const timestamp = new Date().toISOString();
+  let seq = Date.now();
+  const nextItems = [];
+  urls.forEach(url => {
+    if (!url || existing.has(url)) return;
+    existing.add(url);
+    nextItems.push({
+      id: `img-${seq++}`,
+      url,
+      prompt,
+      model,
+      size,
+      format,
+      provider,
+      timestamp,
+    });
+  });
+  if (!nextItems.length) return;
+  await saveImageHistory(rootDir, authHeader, provider, [...history, ...nextItems]);
 }
 
 function proxyRequest(req, res, url) {
@@ -204,6 +297,53 @@ function proxyOpenAiImages(req, res) {
   } else {
     req.pipe(upstream);
   }
+}
+
+async function proxyBytePlusImages(req, res, rootDir) {
+  const body = await readBody(req);
+  let requestPayload = {};
+  try {
+    requestPayload = body.length ? JSON.parse(body.toString('utf8')) : {};
+  } catch {
+    requestPayload = {};
+  }
+
+  const headers = {
+    'User-Agent': USER_AGENT,
+    'Accept': req.headers.accept || 'application/json',
+    'Accept-Encoding': 'identity',
+    'Content-Type': req.headers['content-type'] || 'application/json',
+  };
+  if (req.headers.authorization) headers.Authorization = req.headers.authorization;
+
+  const upstream = https.request(IMAGE_PROXY_URL, { method: 'POST', headers }, upstreamRes => {
+    const chunks = [];
+    upstreamRes.on('data', chunk => chunks.push(chunk));
+    upstreamRes.on('end', async () => {
+      const raw = Buffer.concat(chunks);
+      res.statusCode = upstreamRes.statusCode || 502;
+      const contentType = upstreamRes.headers['content-type'] || 'application/json';
+      res.setHeader('Content-Type', contentType);
+      try {
+        const responsePayload = raw.length ? JSON.parse(raw.toString('utf8')) : {};
+        if ((upstreamRes.statusCode || 500) < 400) {
+          await storeImageHistory(rootDir, req.headers.authorization, 'byteplus', requestPayload, responsePayload);
+        }
+      } catch {
+      }
+      res.end(raw);
+    });
+  });
+  upstream.on('error', err => {
+    sendJson(res, 502, { error: 'proxy_failed', message: err.message });
+  });
+  upstream.end(body);
+}
+
+async function handleImageHistory(req, res, rootDir, provider) {
+  const authHeader = req.headers.authorization || '';
+  const images = await loadImageHistory(rootDir, authHeader, provider);
+  sendJson(res, 200, { images });
 }
 
 function proxyOpenAiResponses(req, res) {
@@ -513,6 +653,30 @@ async function startServer() {
       return;
     }
 
+    if (parsed.pathname === '/api/image/history') {
+      if (method !== 'GET') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      handleImageHistory(req, res, rootDir, 'byteplus').catch(err => {
+        sendJson(res, 500, { error: 'image_history_failed', message: err.message });
+      });
+      return;
+    }
+
+    if (parsed.pathname === '/api/openai/images/history') {
+      if (method !== 'GET') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      handleImageHistory(req, res, rootDir, 'openai').catch(err => {
+        sendJson(res, 500, { error: 'image_history_failed', message: err.message });
+      });
+      return;
+    }
+
     if (parsed.pathname.startsWith('/api/sonauto/')) {
       if (method !== 'GET' && method !== 'POST' && method !== 'DELETE') {
         res.statusCode = 405;
@@ -542,6 +706,18 @@ async function startServer() {
         return;
       }
       proxyOpenAiImages(req, res);
+      return;
+    }
+
+    if (parsed.pathname === '/api/image') {
+      if (method !== 'POST') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      proxyBytePlusImages(req, res, rootDir).catch(err => {
+        sendJson(res, 502, { error: 'proxy_failed', message: err.message });
+      });
       return;
     }
 

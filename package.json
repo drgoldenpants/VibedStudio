@@ -1,6 +1,6 @@
 {
   "name": "vibedstudio",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Local-first AI video studio for BytePlus generation and editing.",
   "author": "VibedStudio",
   "private": true,
@@ -35,6 +35,8 @@
       "editor.css",
       "images.js",
       "images.css",
+      "audio.js",
+      "audio.css",
       "package.json"
     ],
     "directories": {
