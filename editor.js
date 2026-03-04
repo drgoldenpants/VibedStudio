@@ -198,6 +198,7 @@ function toggleSelectedSegment(segId) {
 function clearSelectedSegments() {
     editorState.selectedSegIds = [];
     editorState.selectedSegId = null;
+    editorState.previewSegId = null;
 }
 
 function getSelectedSegments() {
@@ -883,6 +884,9 @@ document.querySelectorAll('.app-tab').forEach(btn => {
         if (tab === 'editor') initEditor();
         if (tab === 'images') window.initImages?.();
         if (tab === 'audio') window.initAudio?.();
+        requestAnimationFrame(() => {
+            window.updateApiKeyGuidanceForCurrentContext?.();
+        });
     });
 });
 
@@ -1269,6 +1273,7 @@ function updatePreviewEffects(t) {
     ];
     classes.forEach(c => stage.classList.remove(c));
     clearPreviewEffectVars(stage);
+    if (!editorState.playing) return;
     const active = getActiveEffectSegmentsAtTime(t);
     if (!active.length) return;
     active.forEach(seg => {
@@ -1293,7 +1298,7 @@ function updatePreviewEffects(t) {
 function updatePreviewSelection() {
     document.querySelectorAll('.preview-layer').forEach(el => {
         const segId = el.dataset.segId;
-        const isSelected = segId === editorState.previewSegId || isSegmentSelected(segId);
+        const isSelected = isSegmentSelected(segId);
         el.classList.toggle('selected', isSelected);
     });
     updatePreviewScaleHandle();
@@ -1417,7 +1422,7 @@ function renderPreviewLayers(layers, t) {
         }
 
         activeIds.add(seg.id);
-        el.classList.toggle('selected', seg.id === editorState.previewSegId || isSegmentSelected(seg.id));
+        el.classList.toggle('selected', isSegmentSelected(seg.id));
         el.style.zIndex = String(1000 - layer.trackIndex);
         el.style.opacity = String(getTransitionOpacity(seg, t));
 
@@ -2237,19 +2242,30 @@ function mediaItemHTML(m, { compact = false } = {}) {
 
     let thumbInner = `<div class="media-thumb-icon">${m.type === 'video' ? videoIcon : m.type === 'audio' ? audioIcon : m.type === 'effect' ? effectIcon : textIcon}</div>`;
     const localSrc = getEditorMediaPlaybackSrc(m);
+    if (compact && m.type === 'video' && m.thumbDataUrl) {
+        const safeThumb = escH(m.thumbDataUrl);
+        thumbInner = `<img src="${safeThumb}" alt="${escH(m.name)}" />`;
+    } else if (compact && m.type === 'audio' && m.thumbDataUrl) {
+        const [accentA, accentB] = getAudioThumbPalette(m.id || m.name || 'audio');
+        const thumbStyle = `background-image: linear-gradient(180deg, rgba(7, 10, 18, 0.08), rgba(7, 10, 18, 0.3)), url('${escH(m.thumbDataUrl)}'); background-size: cover; background-position: center;`;
+        const equalizerBars = Array.from({ length: 18 }, (_, idx) =>
+            `<span class="media-thumb-audio-bar b${(idx % 5) + 1}"></span>`).join('');
+        thumbInner = `
+                <div class="media-thumb-audio-cover" style="--audio-accent-a:${accentA}; --audio-accent-b:${accentB}; ${thumbStyle}">
+                    <div class="media-thumb-audio-eq" aria-hidden="true">${equalizerBars}</div>
+                    <div class="media-thumb-audio-name">${escH(m.name || 'Generated Audio')}</div>
+                </div>`;
+    }
     if (localSrc) {
         if (m.type === 'video') {
-            if (compact && m.thumbDataUrl) {
-                const safeThumb = escH(m.thumbDataUrl);
-                thumbInner = `<img src="${safeThumb}" alt="${escH(m.name)}" />`;
-            } else if (!compact) {
+            if (!compact) {
                 const safeSrc = escH(localSrc);
                 thumbInner = `<video src="${safeSrc}#t=0.1" preload="metadata" muted playsinline></video>`;
             }
         } else if (m.type === 'image') {
             const safeSrc = escH(localSrc);
             thumbInner = `<img src="${safeSrc}" alt="${escH(m.name)}" />`;
-        } else if (m.type === 'audio' && compact) {
+        } else if (m.type === 'audio' && compact && !m.thumbDataUrl) {
             const [accentA, accentB] = getAudioThumbPalette(m.id || m.name || 'audio');
             const thumbStyle = m.thumbDataUrl
                 ? `background-image: linear-gradient(180deg, rgba(7, 10, 18, 0.08), rgba(7, 10, 18, 0.3)), url('${escH(m.thumbDataUrl)}'); background-size: cover; background-position: center;`
@@ -2732,6 +2748,26 @@ async function clearAudioHistoryStore() {
 async function saveProject({ autosave = false, silent = false } = {}) {
     if (autosave && (!canAutosaveProject() || editorState.projectAutosaveBusy)) return false;
     if (autosave) editorState.projectAutosaveBusy = true;
+    const defaultName = `vibedstudio-project-${new Date().toISOString().replace(/[:.]/g, '-')}.svs`;
+    let pickedFileHandle = null;
+    const needsInteractiveFilePick = !autosave
+        && !editorState.projectSaveTarget
+        && typeof window.showSaveFilePicker === 'function';
+
+    if (needsInteractiveFilePick) {
+        try {
+            pickedFileHandle = await window.showSaveFilePicker({
+                suggestedName: defaultName,
+                types: [{
+                    description: 'VibedStudio Project',
+                    accept: { 'application/octet-stream': ['.svs'] },
+                }],
+            });
+        } catch (err) {
+            if (err && err.name === 'AbortError') return false;
+        }
+    }
+
     const maxInlineSize = 12 * 1024 * 1024; // 12MB per asset
     const maxCachedVideoSize = 80 * 1024 * 1024; // 80MB for cached videos
     const maxHistoryVideoSize = 80 * 1024 * 1024; // 80MB per history video
@@ -2905,7 +2941,6 @@ async function saveProject({ autosave = false, silent = false } = {}) {
     }
 
     const blob = await encodeProjectBlob(project);
-    const defaultName = `vibedstudio-project-${new Date().toISOString().replace(/[:.]/g, '-')}.svs`;
 
     const saveToFileHandle = async handle => {
         const writable = await handle.createWritable();
@@ -2931,6 +2966,13 @@ async function saveProject({ autosave = false, silent = false } = {}) {
                 if (!silent) showToast('Project autosave failed', 'error', '❌');
                 return false;
             }
+        }
+
+        if (pickedFileHandle) {
+            await saveToFileHandle(pickedFileHandle);
+            setProjectSaveTarget({ kind: 'file', handle: pickedFileHandle, name: pickedFileHandle.name || defaultName });
+            if (!silent) showToast('Project saved', 'success', '💾');
+            return true;
         }
 
         if (typeof window.showSaveFilePicker === 'function' && !autosave) {
@@ -5229,7 +5271,7 @@ function updatePreviewForTime(t) {
         if (!layers.find(l => l.seg.id === editorState.previewSegId)) {
             editorState.previewSegId = top?.seg.id || null;
         }
-        updatePreviewScaleHandle();
+        updatePreviewSelection();
         editorState.previewOpacity = 1;
     } else {
         clearPreviewLayers();

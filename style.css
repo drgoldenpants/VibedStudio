@@ -2877,3 +2877,17 @@ input[type="range"]:hover::-webkit-slider-thumb {
 .hak-hint a:hover {
   text-decoration: underline;
 }
+
+.hak-widget.show-guidance .hak-trigger {
+  position: relative;
+  z-index: 205;
+  border-color: rgba(250, 204, 21, 0.85);
+  box-shadow: 0 0 0 4px rgba(250, 204, 21, 0.16), 0 0 28px rgba(250, 204, 21, 0.3);
+}
+
+.hak-widget.show-guidance .hak-tooltip {
+  display: block;
+  opacity: 1;
+  transform: translateY(-50%);
+  pointer-events: auto;
+}

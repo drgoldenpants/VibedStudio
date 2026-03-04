@@ -12,7 +12,7 @@ const AUDIO_MODELS = [
         name: 'Sonauto v3 Preview',
         badge: 'PREVIEW',
         endpoint: 'v3',
-        desc: 'Streaming-ready, faster generations',
+        desc: 'Best for fast turnaround and modern overall quality',
         supports: {
             outputs: false,
             balance: false,
@@ -27,7 +27,7 @@ const AUDIO_MODELS = [
         name: 'Sonauto v2',
         badge: 'STABLE',
         endpoint: 'v2',
-        desc: '1-2 songs, BPM + seed, alignment supported',
+        desc: 'More controllable and steady, with slightly older overall quality',
         supports: {
             outputs: true,
             balance: true,
@@ -378,6 +378,10 @@ function renderAudioModelGrid() {
             grid.querySelectorAll('.model-card').forEach(c => c.classList.remove('selected'));
             card.classList.add('selected');
             audioState.model = card.dataset.model;
+            const hasKey = !!String(window.state?.sonautoApiKey || localStorage.getItem('vibedstudio_sonauto_api_key') || '').trim();
+            if (!hasKey && typeof window.showApiKeyWizard === 'function') {
+                window.showApiKeyWizard('sonauto');
+            }
             updateAudioControls();
             updateAudioOutputLabel();
             updateAudioJsonPreview();
@@ -538,7 +542,12 @@ function buildAudioPayload({ preview = false } = {}) {
 async function handleAudioGenerate() {
     const key = (window.state?.sonautoApiKey || document.getElementById('sonauto-api-key')?.value || '').trim();
     if (!key) {
-        showError('No Sonauto API key found.\n\nPaste your key in the Authentication bar before generating audio.');
+        const opened = typeof window.showApiKeyWizard === 'function'
+            ? window.showApiKeyWizard('sonauto')
+            : false;
+        if (!opened) {
+            showError('No Sonauto API key found.\n\nPaste your key in the Authentication bar before generating audio.');
+        }
         return;
     }
 

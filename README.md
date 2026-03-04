@@ -1,6 +1,8 @@
 # Vibed Studio
-![Video generation view](screenshots/generation.png)
-![Editor view](screenshots/editor.png)
+![Image Generation](screenshots/image_page.png)
+![Video Generation](screenshots/video_page.png)
+![Music Generation](screenshots/audio_page.png)
+![Video Editor](screenshots/edit_page.png)
 
  Vibed Studio is a lightweight, local-first UI for generating and managing AI videos and images with BytePlus. It runs entirely in the browser and stores all files locally.
  

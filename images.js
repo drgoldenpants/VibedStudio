@@ -18,7 +18,7 @@ const IMAGE_MODELS = [
         supportsFormat: true,
         supportsOptimize: false,
         supportsReference: true,
-        desc: 'Text, single-image, multi-image',
+        desc: 'Best image quality here, crisp detail and strong prompt response',
     },
     {
         id: 'seedream-4-5-251128',
@@ -29,7 +29,7 @@ const IMAGE_MODELS = [
         supportsFormat: false,
         supportsOptimize: false,
         supportsReference: true,
-        desc: 'Text, single-image, multi-image',
+        desc: 'Very strong quality with a polished look and dependable results',
     },
     {
         id: 'seedream-4-0-250828',
@@ -40,7 +40,7 @@ const IMAGE_MODELS = [
         supportsFormat: false,
         supportsOptimize: true,
         supportsReference: true,
-        desc: 'Text, single-image, multi-image',
+        desc: 'Good balanced quality, slightly older but still reliable',
     },
     {
         id: 'gpt-image-1.5',
@@ -49,7 +49,7 @@ const IMAGE_MODELS = [
         sizes: ['1024x1024', '1024x1536', '1536x1024'],
         provider: 'openai',
         supportsReference: true,
-        desc: 'Text, multi-image reference',
+        desc: 'Excellent prompt understanding and creative edits, but less photographic',
     },
 ];
 
@@ -369,7 +369,7 @@ function renderImgModelGrid() {
             <input type="radio" name="img-model" value="${m.id}" ${m.id === imgState.model ? 'checked' : ''} ${m.disabled ? 'disabled' : ''} hidden />
             ${m.badge ? `<div class="model-badge pro">${m.badge}</div>` : '<div class="model-badge lite">IMG</div>'}
             <div class="model-name">${m.name}</div>
-            <div class="model-desc">${descText} · Sizes: ${sizeText}</div>
+            <div class="model-desc">${descText} </div>
         </label>`;
     }).join('');
 
@@ -383,6 +383,13 @@ function renderImgModelGrid() {
             grid.querySelectorAll('.model-card').forEach(c => c.classList.remove('selected'));
             card.classList.add('selected');
             imgState.model = card.dataset.model;
+            const provider = model?.provider || 'byteplus';
+            const hasKey = provider === 'openai'
+                ? !!String(window.state?.openaiApiKey || localStorage.getItem('vibedstudio_openai_api_key') || '').trim()
+                : !!String(window.state?.apiKey || localStorage.getItem('vibedstudio_api_key') || '').trim();
+            if (!hasKey && typeof window.showApiKeyWizard === 'function') {
+                window.showApiKeyWizard(provider === 'openai' ? 'openai' : 'byteplus');
+            }
             // Update valid sizes for this model
             updateSizeButtons();
             updateFormatButtons();
@@ -898,9 +905,14 @@ async function handleImageGenerate() {
         ? (window.state?.openaiApiKey || localStorage.getItem('vibedstudio_openai_api_key') || '')
         : (window.state?.apiKey || localStorage.getItem('vibedstudio_api_key') || '');
     if (!apiKey) {
-        showError(provider === 'openai'
-            ? 'No OpenAI API key found.\n\nPlease paste your OpenAI API key in the API key menu first.'
-            : 'No API key found.\n\nPlease paste your BytePlus API key in the Generate tab first.');
+        const opened = typeof window.showApiKeyWizard === 'function'
+            ? window.showApiKeyWizard(provider === 'openai' ? 'openai' : 'byteplus')
+            : false;
+        if (!opened) {
+            showError(provider === 'openai'
+                ? 'No OpenAI API key found.\n\nPlease paste your OpenAI API key in the API key menu first.'
+                : 'No API key found.\n\nPlease paste your BytePlus API key in the Generate tab first.');
+        }
         return;
     }
     const prompt = document.getElementById('img-prompt')?.value.trim();

@@ -672,10 +672,95 @@ window.showServerHelp = showServerHelp;
 function closeErrorModal() {
   errorModal.classList.add('hidden');
 }
+
+let activeApiKeyGuidanceProvider = null;
+let apiKeyGuidanceOpenedAt = 0;
+
+function getApiKeyWizardConfig(provider = 'byteplus') {
+  switch (provider) {
+    case 'openai':
+      return {
+        input: openAiKeyInput,
+        message: 'Add your OpenAI API key in this API menu.',
+      };
+    case 'sonauto':
+      return {
+        input: sonautoKeyInput,
+        message: 'Add your Sonauto API key in this API menu.',
+      };
+    case 'byteplus':
+    default:
+      return {
+        input: apiKeyInput,
+        message: 'Add your BytePlus API key in this API menu.',
+      };
+  }
+}
+
+function closeApiKeyWizard() {
+  activeApiKeyGuidanceProvider = null;
+  hakWidget?.classList.remove('show-guidance');
+  if (hakTooltip) {
+    hakTooltip.classList.remove('show');
+    hakTooltip.textContent = 'Add your BytePlus API key to start';
+  }
+}
+
+function showApiKeyWizard(provider = 'byteplus') {
+  const config = getApiKeyWizardConfig(provider);
+  if (!config.input || !hakWidget) return false;
+  closeErrorModal();
+  activeApiKeyGuidanceProvider = provider;
+  hakWidget?.classList.add('open');
+  hakWidget?.classList.add('show-guidance');
+  if (hakTooltip) {
+    hakTooltip.textContent = config.message;
+    hakTooltip.classList.add('show');
+  }
+  apiKeyGuidanceOpenedAt = Date.now();
+  requestAnimationFrame(() => {
+    config.input.focus();
+    config.input.select?.();
+  });
+  return true;
+}
+window.showApiKeyWizard = showApiKeyWizard;
+
+function updateApiKeyGuidanceForCurrentContext() {
+  const activeTab = document.querySelector('.app-tab.active')?.dataset.tab || 'generate';
+  if (activeTab === 'editor') {
+    closeApiKeyWizard();
+    return;
+  }
+  if (activeTab === 'audio') {
+    if (!String(state.sonautoApiKey || '').trim()) showApiKeyWizard('sonauto');
+    else if (activeApiKeyGuidanceProvider === 'sonauto') closeApiKeyWizard();
+    return;
+  }
+  if (activeTab === 'images') {
+    const selectedModelId = document.querySelector('#img-model-grid .model-card.selected')?.dataset?.model || 'seedream-5-0-260128';
+    const provider = selectedModelId === 'gpt-image-1.5' ? 'openai' : 'byteplus';
+    const hasKey = provider === 'openai'
+      ? !!String(state.openaiApiKey || '').trim()
+      : !!String(state.apiKey || '').trim();
+    if (!hasKey) showApiKeyWizard(provider);
+    else if (activeApiKeyGuidanceProvider === provider) closeApiKeyWizard();
+    return;
+  }
+  if (!String(state.apiKey || '').trim()) showApiKeyWizard('byteplus');
+  else if (activeApiKeyGuidanceProvider === 'byteplus') closeApiKeyWizard();
+}
+window.updateApiKeyGuidanceForCurrentContext = updateApiKeyGuidanceForCurrentContext;
+
 modalClose.addEventListener('click', closeErrorModal);
 modalOk.addEventListener('click', closeErrorModal);
 errorModal.addEventListener('click', e => { if (e.target === errorModal) closeErrorModal(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeErrorModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeErrorModal();
+    closeApiKeyWizard();
+  }
+});
 
 // ── Server Mode Gate (Images + Audio tabs) ────────────────────
 const isServerMode = location.protocol !== 'file:' && location.origin !== 'null';
@@ -1148,6 +1233,7 @@ async function init() {
   if (state.apiKey) scheduleRemoteSync();
   applyModelCapabilities();
   updatePromptChips();
+  updateApiKeyGuidanceForCurrentContext();
 }
 
 if (exportVideosBtn) {
@@ -1194,6 +1280,7 @@ apiKeyInput.addEventListener('input', () => {
   localStorage.setItem('vibedstudio_api_key', state.apiKey);
   updateHakDot();
   updateApiKeyHints();
+  if (state.apiKey && activeApiKeyGuidanceProvider === 'byteplus') closeApiKeyWizard();
   if (state.apiKey) scheduleRemoteSync();
   if (state.apiKey) scheduleImageHistorySync('byteplus');
 });
@@ -1203,6 +1290,7 @@ if (openAiKeyInput) {
     state.openaiApiKey = openAiKeyInput.value.trim();
     localStorage.setItem('vibedstudio_openai_api_key', state.openaiApiKey);
     updateApiKeyHints();
+    if (state.openaiApiKey && activeApiKeyGuidanceProvider === 'openai') closeApiKeyWizard();
     if (state.openaiApiKey) scheduleImageHistorySync('openai');
   });
 }
@@ -1212,6 +1300,7 @@ if (sonautoKeyInput) {
     state.sonautoApiKey = sonautoKeyInput.value.trim();
     localStorage.setItem('vibedstudio_sonauto_api_key', state.sonautoApiKey);
     updateApiKeyHints();
+    if (state.sonautoApiKey && activeApiKeyGuidanceProvider === 'sonauto') closeApiKeyWizard();
   });
 }
 
@@ -1231,7 +1320,7 @@ function updateHakDot() {
   dot.style.background = state.apiKey ? 'var(--green, #22c55e)' : 'var(--red, #ef4444)';
   dot.style.opacity = state.apiKey ? '1' : '0.5';
   if (hakWidget) hakWidget.classList.toggle('needs-key', !state.apiKey);
-  if (hakTooltip) hakTooltip.classList.toggle('hidden', !!state.apiKey);
+  if (hakTooltip) hakTooltip.classList.toggle('hidden', !!state.apiKey && !activeApiKeyGuidanceProvider);
   updateApiKeyHints();
 }
 
@@ -1243,13 +1332,22 @@ const hakPanel = $('hak-panel');
 if (hakTrigger) {
   hakTrigger.addEventListener('click', () => {
     const open = hakWidget.classList.toggle('open');
+    if (!open) closeApiKeyWizard();
+    else hakWidget.classList.remove('show-guidance');
     if (open) apiKeyInput.focus();
   });
   document.addEventListener('click', e => {
-    if (!hakWidget.contains(e.target)) hakWidget.classList.remove('open');
+    if (Date.now() - apiKeyGuidanceOpenedAt < 200) return;
+    if (!hakWidget.contains(e.target)) {
+      hakWidget.classList.remove('open');
+      closeApiKeyWizard();
+    }
   });
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') hakWidget.classList.remove('open');
+    if (e.key === 'Escape') {
+      hakWidget.classList.remove('open');
+      closeApiKeyWizard();
+    }
   });
 }
 
@@ -1491,6 +1589,7 @@ modelGrid.addEventListener('click', e => {
   card.classList.add('selected');
   state.model = card.dataset.model;
   card.querySelector('input[type="radio"]').checked = true;
+  if (!state.apiKey) showApiKeyWizard('byteplus');
   applyModelCapabilities();
   updateJsonPreview();
   scheduleTokenization(textPrompt.value, 'text');
@@ -2490,7 +2589,10 @@ async function handleGenerate() {
 
 function validateJobConfig(jobConfig, { focusOnError = false } = {}) {
   if (!state.apiKey) {
-    showError('No API key found.\n\nPlease paste your BytePlus API key into the Authentication field on the left before generating.');
+    const opened = showApiKeyWizard('byteplus');
+    if (!opened) {
+      showError('No API key found.\n\nPlease paste your BytePlus API key into the Authentication field on the left before generating.');
+    }
     if (focusOnError) $('api-key').focus();
     return false;
   }
