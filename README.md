@@ -4,15 +4,19 @@
 ![Music Generation](screenshots/audio_page.png)
 ![Video Editor](screenshots/edit_page.png)
 
- Vibed Studio is a lightweight, local-first UI for generating and managing AI videos and images with BytePlus. It runs entirely in the browser and stores all files locally.
+ Vibed Studio is a local-first desktop and browser UI for generating videos, images, and music, then assembling them in a built-in timeline editor. It keeps project data and generation history on your machine.
  
 ## Features
-- Video generation (Seedance models)
-- Image generation (Seedream models, OpenAI models)
-- Audio generation (Sunoauto models)
-- Local history for images, videos, audio 
-- JSON request/response previews
-- Basic Video Editing Tool 
+- Video generation with Seedance models
+- Image generation with Seedream and OpenAI models
+- Music/audio generation with Sonauto models
+- Local history for generated videos, images, and audio
+- Built-in timeline editor for video, image, audio, text, effect, and transition tracks
+- Effect presets with editable parameters
+- Transition presets with editable parameters
+- Project save/load with `.svs` files and autosave support after first save
+- JSON request/response previews for generation tools
+- Desktop builds for macOS, Windows, and Linux
 
 
 ## Install From Release (macOS / Windows / Linux)
@@ -50,10 +54,10 @@ Open the latest GitHub Release and download the installer for your OS:
 You can open the app directly:
 - Double-click `index.html`
 
-This works for video generation, but Images and Editor tabs require server mode.
+This works best for basic video generation only.
 
 ### 2) Server mode (recommended)
-Run the included dev server to enable Images and Editor tabs and avoid CORS issues:
+Run the included dev server to enable the full app, including Images, Audio, project save/load, and local proxy routes:
 ```bash
 python3 server.py
 ```
@@ -63,11 +67,23 @@ http://localhost:8787
 ```
 
 ### 3) Set your API key
-Click the key icon in the header and paste your BytePlus API key. The key is stored in `localStorage` on your machine.
+Click the key icon in the header and paste the keys you want to use:
+- BytePlus API key for video generation and Seedream image models
+- OpenAI API key for OpenAI image models
+- Sonauto API key for audio generation
 
+Keys are stored locally on your machine.
 
-## Desktop App (One‑Click Installers)
-You can ship VibedStudio as a native app for macOS, Windows, and Linux.
+## Editor
+The Editor tab supports:
+- video, image, audio, text, and effect tracks
+- drag/drop media from generated history into the timeline
+- multi-select and grouped timeline moves
+- snapping across tracks while moving and trimming
+- transition segments between adjacent clips
+- right-click editing for effect and transition parameters
+- project save/load and autosave after a project target exists
+
 
 ### Build locally
 ```bash
@@ -75,30 +91,20 @@ npm install
 npm run dist
 ```
 
-Artifacts will appear in `dist/`:
-- macOS: `.dmg`
-- Windows: `.exe` (NSIS installer)
-- Linux: `.AppImage`
-
-### Create a GitHub Release
-Releases are generated automatically by GitHub Actions when you push a version tag:
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-The workflow builds installers for macOS, Windows, and Linux and publishes them on the GitHub Releases page.
-
 ## Project Structure
 - `index.html` — main UI shell
 - `style.css`, `editor.css`, `images.css` — styling
 - `app.js` — video generation UI logic
 - `images.js` — image generation UI logic
+- `audio.js` — audio generation UI logic
 - `editor.js` — editor tab logic
-- `server.py` — minimal CORS-aware dev server with image proxy
+- `desktop/` — Electron desktop wrapper
+- `server.py` — local dev server and API proxy helpers
 
 ## Notes
-- The Images and Editor tabs are disabled when opened via `file://` because they require server mode.
-- All history is stored locally in your browser (IndexedDB).
+- Opening via `file://` is limited. Use server mode or the packaged desktop app for the full feature set.
+- Generation history is stored locally in IndexedDB.
+- `.svs` project files can be large because they can embed project media and cached generation data.
 
 ## License
-TBD
+Code was all Vibed, I didnt write one line of code, do to it what you will LOL 
