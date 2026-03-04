@@ -23,6 +23,7 @@ const editorState = {
     lastRafTime: null,
     dragMediaId: null,
     selectedSegId: null,
+    selectedSegIds: [],
     exporting: false,
     exportRecorder: null,
     exportEnd: null,
@@ -35,6 +36,8 @@ const editorState = {
     segmentMenuEl: null,
     exportCanvas: null,
     exportCtx: null,
+    exportAudioContext: null,
+    exportAudioDestination: null,
     previewOpacity: 1,
     playheadMenuEl: null,
     generatedPage: 1,
@@ -62,6 +65,40 @@ const TIMELINE_MIN_SECONDS = 300;
 const TRANSITION_DUR = 0.5;
 const TIMELINE_HISTORY_LIMIT = 50;
 const TIMELINE_TAIL_SECONDS = 2;
+const TRANSITION_PRESETS = [
+    { key: 'cross-dissolve', label: 'Cross Dissolve' },
+    { key: 'whip-pan', label: 'Whip Pan' },
+    { key: 'zoom-in-out', label: 'Zoom In/Out' },
+    { key: 'glitch-effects', label: 'Glitch & Effects' },
+    { key: 'speed-ramps', label: 'Speed Ramps' },
+    { key: 'match-cut', label: 'Match Cut' },
+];
+const TRANSITION_PRESET_MAP = new Map(TRANSITION_PRESETS.map(p => [p.key, p]));
+const TRANSITION_PARAM_DEFS = {
+    'cross-dissolve': [
+        { key: 'duration', label: 'Duration', min: 0.15, max: 1.5, step: 0.05, default: 0.5 },
+    ],
+    'whip-pan': [
+        { key: 'duration', label: 'Duration', min: 0.15, max: 1.5, step: 0.05, default: 0.45 },
+        { key: 'distance', label: 'Distance', min: 0.08, max: 0.45, step: 0.01, default: 0.22 },
+    ],
+    'zoom-in-out': [
+        { key: 'duration', label: 'Duration', min: 0.15, max: 1.5, step: 0.05, default: 0.45 },
+        { key: 'zoom', label: 'Zoom', min: 0.04, max: 0.35, step: 0.01, default: 0.16 },
+    ],
+    'glitch-effects': [
+        { key: 'duration', label: 'Duration', min: 0.15, max: 1.2, step: 0.05, default: 0.35 },
+        { key: 'shift', label: 'Shift', min: 0.01, max: 0.12, step: 0.01, default: 0.04 },
+    ],
+    'speed-ramps': [
+        { key: 'duration', label: 'Duration', min: 0.15, max: 1.0, step: 0.05, default: 0.35 },
+        { key: 'boost', label: 'Boost', min: 0.05, max: 0.35, step: 0.01, default: 0.14 },
+    ],
+    'match-cut': [
+        { key: 'duration', label: 'Duration', min: 0.1, max: 0.8, step: 0.05, default: 0.22 },
+        { key: 'settle', label: 'Settle', min: 0, max: 0.18, step: 0.01, default: 0.06 },
+    ],
+};
 
 // ── DOM helpers ───────────────────────────────────────────────
 const eq = id => document.getElementById(id);
@@ -90,6 +127,7 @@ function snapshotTimelineState() {
         tracks: editorState.tracks.map(cloneTrackForHistory),
         transitions: editorState.transitions.map(t => ({ ...t })),
         selectedSegId: editorState.selectedSegId,
+        selectedSegIds: [...(editorState.selectedSegIds || [])],
         previewSegId: editorState.previewSegId,
         currentTime: editorState.currentTime,
         timelineDur: editorState.timelineDur,
@@ -108,14 +146,92 @@ function applyTimelineState(state) {
             transform: s.transform ? { ...s.transform } : { x: 0, y: 0, scale: 1 },
         })),
     }));
-    editorState.transitions = Array.isArray(state.transitions) ? state.transitions.map(t => ({ ...t })) : [];
+    editorState.transitions = Array.isArray(state.transitions) ? state.transitions.map(t => normalizeTransitionData(t)) : [];
     editorState.selectedSegId = state.selectedSegId || null;
+    editorState.selectedSegIds = Array.isArray(state.selectedSegIds)
+        ? [...new Set(state.selectedSegIds.filter(Boolean))]
+        : (editorState.selectedSegId ? [editorState.selectedSegId] : []);
+    if (editorState.selectedSegId && !editorState.selectedSegIds.includes(editorState.selectedSegId)) {
+        editorState.selectedSegIds.unshift(editorState.selectedSegId);
+    }
     editorState.previewSegId = state.previewSegId || null;
     editorState.timelineDur = state.timelineDur || editorState.timelineDur;
     renderTimeline();
     seekTo(state.currentTime || 0);
     updatePreviewSelection();
     editorState.historyLock = false;
+}
+
+function getSelectedSegIds() {
+    const ids = Array.isArray(editorState.selectedSegIds) ? editorState.selectedSegIds.filter(Boolean) : [];
+    if (editorState.selectedSegId && !ids.includes(editorState.selectedSegId)) ids.unshift(editorState.selectedSegId);
+    return [...new Set(ids)];
+}
+
+function isSegmentSelected(segId) {
+    return !!segId && getSelectedSegIds().includes(segId);
+}
+
+function setSelectedSegments(segIds, primarySegId = null) {
+    const ids = [...new Set((segIds || []).filter(Boolean))];
+    const primary = primarySegId && ids.includes(primarySegId)
+        ? primarySegId
+        : ids[0] || null;
+    editorState.selectedSegIds = ids;
+    editorState.selectedSegId = primary;
+    if (primary) editorState.previewSegId = primary;
+}
+
+function toggleSelectedSegment(segId) {
+    if (!segId) return;
+    const ids = getSelectedSegIds();
+    if (ids.includes(segId)) {
+        const next = ids.filter(id => id !== segId);
+        const nextPrimary = editorState.selectedSegId === segId ? (next[0] || null) : editorState.selectedSegId;
+        setSelectedSegments(next, nextPrimary);
+        return;
+    }
+    ids.push(segId);
+    setSelectedSegments(ids, segId);
+}
+
+function clearSelectedSegments() {
+    editorState.selectedSegIds = [];
+    editorState.selectedSegId = null;
+}
+
+function getSelectedSegments() {
+    const selected = new Set(getSelectedSegIds());
+    return editorState.tracks.flatMap(track =>
+        track.segments
+            .filter(seg => selected.has(seg.id))
+            .map(seg => ({ seg, track }))
+    );
+}
+
+function getMultiDragBounds(selectedEntries) {
+    let minDelta = -Infinity;
+    let maxDelta = Infinity;
+    const selectedIds = new Set(selectedEntries.map(entry => entry.seg.id));
+    selectedEntries.forEach(({ seg, track }) => {
+        const others = track.segments
+            .filter(s => !selectedIds.has(s.id))
+            .sort((a, b) => a.start - b.start);
+        let prevEnd = 0;
+        let nextStart = Infinity;
+        for (const other of others) {
+            const otherStart = other.start || 0;
+            const otherEnd = otherStart + (other.duration || 0);
+            if (otherEnd <= (seg.start || 0)) prevEnd = Math.max(prevEnd, otherEnd);
+            if (otherStart >= (seg.start || 0) + (seg.duration || 0)) {
+                nextStart = otherStart;
+                break;
+            }
+        }
+        minDelta = Math.max(minDelta, prevEnd - (seg.start || 0));
+        maxDelta = Math.min(maxDelta, nextStart - ((seg.start || 0) + (seg.duration || 0)));
+    });
+    return { minDelta, maxDelta };
 }
 
 function pushTimelineHistory(snapshot) {
@@ -471,27 +587,158 @@ function createTextMediaItem(overrides = {}) {
     return item;
 }
 
+const EFFECT_PRESETS = [
+    { name: 'Zoom Punch', key: 'zoom-punch', duration: 2.0 },
+    { name: 'Glitch', key: 'glitch', duration: 1.5 },
+    { name: 'VHS', key: 'vhs', duration: 3.0 },
+    { name: 'Blur In', key: 'blur-in', duration: 1.2 },
+    { name: 'Aesthetic Weekend', key: 'aesthetic-weekend', duration: 3.0 },
+    { name: 'Retro Glow', key: 'retro-glow', duration: 3.0 },
+    { name: 'Cozy', key: 'cozy', duration: 3.0 },
+    { name: 'Brew', key: 'brew', duration: 3.0 },
+    { name: 'Tonal', key: 'tonal', duration: 3.0 },
+    { name: 'Beach', key: 'beach', duration: 3.0 },
+    { name: 'Color Bomb', key: 'color-bomb', duration: 2.5 },
+    { name: 'Vintage Film', key: 'vintage-film', duration: 3.0 },
+    { name: 'ND3-Angel', key: 'nd3-angel', duration: 3.0 },
+];
+
+const EFFECT_PARAM_DEFS = {
+    'zoom-punch': [
+        { key: 'strength', label: 'Strength', min: 0.02, max: 0.2, step: 0.01, default: 0.06 },
+    ],
+    'glitch': [
+        { key: 'shift', label: 'Shift', min: 1, max: 8, step: 0.5, default: 1.5 },
+        { key: 'contrast', label: 'Contrast', min: 1, max: 1.8, step: 0.05, default: 1.2 },
+    ],
+    'vhs': [
+        { key: 'saturation', label: 'Saturation', min: 1, max: 1.8, step: 0.05, default: 1.35 },
+        { key: 'scanlines', label: 'Scanlines', min: 0, max: 0.7, step: 0.05, default: 0.35 },
+    ],
+    'blur-in': [
+        { key: 'amount', label: 'Blur', min: 1, max: 10, step: 0.5, default: 4 },
+    ],
+    'aesthetic-weekend': [
+        { key: 'warmth', label: 'Warmth', min: 0, max: 0.4, step: 0.02, default: 0.14 },
+        { key: 'wash', label: 'Wash', min: 0, max: 0.45, step: 0.02, default: 0.28 },
+    ],
+    'retro-glow': [
+        { key: 'sepia', label: 'Sepia', min: 0, max: 0.5, step: 0.02, default: 0.18 },
+        { key: 'glow', label: 'Glow', min: 0, max: 0.5, step: 0.02, default: 0.34 },
+    ],
+    'cozy': [
+        { key: 'warmth', label: 'Warmth', min: 0, max: 0.45, step: 0.02, default: 0.24 },
+        { key: 'softness', label: 'Softness', min: 0, max: 0.4, step: 0.02, default: 0.22 },
+    ],
+    'brew': [
+        { key: 'roast', label: 'Roast', min: 0, max: 0.6, step: 0.02, default: 0.44 },
+        { key: 'shade', label: 'Shade', min: 0, max: 0.4, step: 0.02, default: 0.24 },
+    ],
+    'tonal': [
+        { key: 'mono', label: 'Mono', min: 0, max: 1, step: 0.05, default: 0.85 },
+        { key: 'contrast', label: 'Contrast', min: 1, max: 1.5, step: 0.05, default: 1.14 },
+    ],
+    'beach': [
+        { key: 'vibrance', label: 'Vibrance', min: 1, max: 1.6, step: 0.05, default: 1.24 },
+        { key: 'sunlight', label: 'Sunlight', min: 0, max: 0.4, step: 0.02, default: 0.24 },
+    ],
+    'color-bomb': [
+        { key: 'saturation', label: 'Saturation', min: 1, max: 2.2, step: 0.05, default: 1.75 },
+        { key: 'burst', label: 'Burst', min: 0, max: 0.35, step: 0.02, default: 0.2 },
+    ],
+    'vintage-film': [
+        { key: 'age', label: 'Age', min: 0, max: 0.6, step: 0.02, default: 0.36 },
+        { key: 'grain', label: 'Grain', min: 0, max: 0.5, step: 0.02, default: 0.3 },
+    ],
+    'nd3-angel': [
+        { key: 'halo', label: 'Halo', min: 0, max: 0.45, step: 0.02, default: 0.28 },
+        { key: 'softness', label: 'Softness', min: 0, max: 1.2, step: 0.05, default: 0.3 },
+    ],
+};
+
+const EFFECT_PRESET_MAP = new Map(EFFECT_PRESETS.map(p => [p.key, p]));
+const EFFECT_CSS_VAR_NAMES = [
+    '--fx-zoom-scale',
+    '--fx-glitch-shift',
+    '--fx-glitch-contrast',
+    '--fx-vhs-saturation',
+    '--fx-vhs-scanlines',
+    '--fx-blur-max',
+    '--fx-aw-warmth',
+    '--fx-aw-wash',
+    '--fx-rg-sepia',
+    '--fx-rg-glow',
+    '--fx-cozy-warmth',
+    '--fx-cozy-softness',
+    '--fx-brew-roast',
+    '--fx-brew-shade',
+    '--fx-tonal-mono',
+    '--fx-tonal-contrast',
+    '--fx-beach-vibrance',
+    '--fx-beach-sunlight',
+    '--fx-cb-saturation',
+    '--fx-cb-burst',
+    '--fx-vf-age',
+    '--fx-vf-grain',
+    '--fx-angel-halo',
+    '--fx-angel-softness',
+];
+
+function cloneEffectParams(params) {
+    return params && typeof params === 'object' ? { ...params } : null;
+}
+
+function getEffectPreset(key) {
+    return EFFECT_PRESET_MAP.get(key) || EFFECT_PRESETS[0];
+}
+
+function getEffectParamDefs(key) {
+    return EFFECT_PARAM_DEFS[key] || [];
+}
+
+function getDefaultEffectParams(key) {
+    const defs = getEffectParamDefs(key);
+    const defaults = {};
+    defs.forEach(def => {
+        defaults[def.key] = def.default;
+    });
+    return defaults;
+}
+
+function normalizeEffectParams(key, params) {
+    const defs = getEffectParamDefs(key);
+    const next = {};
+    defs.forEach(def => {
+        const raw = Number(params?.[def.key]);
+        const value = Number.isFinite(raw) ? raw : def.default;
+        next[def.key] = Math.max(def.min, Math.min(def.max, value));
+    });
+    return next;
+}
+
 function ensureEffectLibrary() {
     if (editorState.effectLibraryReady) return;
-    const existing = editorState.mediaItems.some(m => m.type === 'effect');
-    if (!existing) {
-        const presets = [
-            { name: 'Zoom Punch', key: 'zoom-punch', duration: 2.0 },
-            { name: 'Glitch', key: 'glitch', duration: 1.5 },
-            { name: 'VHS', key: 'vhs', duration: 3.0 },
-            { name: 'Blur In', key: 'blur-in', duration: 1.2 },
-        ];
-        presets.forEach(p => {
-            editorState.mediaItems.push({
-                id: `fx-${p.key}`,
-                name: p.name,
-                type: 'effect',
-                duration: p.duration,
-                source: 'effect',
-                effectKey: p.key,
-            });
+    EFFECT_PRESETS.forEach(p => {
+        const existing = editorState.mediaItems.find(m => m.id === `fx-${p.key}`);
+        if (existing) {
+            existing.name = p.name;
+            existing.type = 'effect';
+            existing.duration = p.duration;
+            existing.source = 'effect';
+            existing.effectKey = p.key;
+            existing.effectParams = normalizeEffectParams(p.key, existing.effectParams);
+            return;
+        }
+        editorState.mediaItems.push({
+            id: `fx-${p.key}`,
+            name: p.name,
+            type: 'effect',
+            duration: p.duration,
+            source: 'effect',
+            effectKey: p.key,
+            effectParams: getDefaultEffectParams(p.key),
         });
-    }
+    });
     editorState.effectLibraryReady = true;
 }
 
@@ -662,6 +909,8 @@ function initEditor() {
     eq('tl-zoom-out').addEventListener('click', () => setZoom(editorState.pxPerSec / 1.5));
     eq('tool-add-video-track').addEventListener('click', () => addTrack('video'));
     eq('tool-add-audio-track').addEventListener('click', () => addTrack('audio'));
+    eq('tool-add-effect-track')?.addEventListener('click', () => addTrack('effect'));
+    eq('tool-add-text-track')?.addEventListener('click', () => addTrack('text'));
     initGeneratedMediaTabs();
     eq('tool-clear-timeline')?.addEventListener('click', clearTimeline);
     eq('tool-save-project')?.addEventListener('click', saveProject);
@@ -733,7 +982,13 @@ function initEditor() {
             const scrollEl = eq('tl-scroll-area');
             const ruler = eq('tl-ruler');
             const rect = ruler.getBoundingClientRect();
+            const startX = e.clientX;
+            let dragging = false;
             const onMove = mv => {
+                if (!dragging) {
+                    if (Math.abs(mv.clientX - startX) < 3) return;
+                    dragging = true;
+                }
                 const scrollLeft = scrollEl.scrollLeft;
                 const t = (mv.clientX - rect.left + scrollLeft) / editorState.pxPerSec;
                 seekTo(t);
@@ -751,10 +1006,13 @@ function initEditor() {
     // Ruler click/drag to seek
     const ruler = eq('tl-ruler');
     ruler.addEventListener('pointerdown', e => {
-        e.preventDefault();
-        ruler.setPointerCapture(e.pointerId);
         const scrollLeft = eq('tl-scroll-area').scrollLeft;
         const rect = ruler.getBoundingClientRect();
+        const x = e.clientX - rect.left + scrollLeft;
+        const playheadX = editorState.currentTime * editorState.pxPerSec;
+        if (Math.abs(x - playheadX) <= 10) return;
+        e.preventDefault();
+        ruler.setPointerCapture(e.pointerId);
         seekTo((e.clientX - rect.left + scrollLeft) / editorState.pxPerSec);
         ruler.addEventListener('pointermove', onRulerMove);
         ruler.addEventListener('pointerup', () => ruler.removeEventListener('pointermove', onRulerMove), { once: true });
@@ -804,6 +1062,13 @@ function getPreviewStageRect() {
     const stage = eq('preview-stage');
     if (!stage) return null;
     return stage.getBoundingClientRect();
+}
+
+function getExportTextScale() {
+    const stageRect = getPreviewStageRect();
+    const canvas = editorState.exportCanvas;
+    if (!stageRect || !canvas || !stageRect.width || !stageRect.height) return 1;
+    return Math.min(canvas.width / stageRect.width, canvas.height / stageRect.height);
 }
 
 function getPreviewMediaSize(seg) {
@@ -868,13 +1133,16 @@ function applyPreviewTransform(seg) {
     const target = layers?.querySelector(`.preview-layer[data-seg-id="${seg?.id}"]`);
     if (!target) return;
     const t = getSegmentTransform(seg);
-    const tx = t.x * stageRect.width;
-    const ty = t.y * stageRect.height;
+    const transitionState = getTransitionVisualState(seg, editorState.currentTime || 0);
+    const tx = (t.x + transitionState.x) * stageRect.width;
+    const ty = (t.y + transitionState.y) * stageRect.height;
+    const scale = (t.scale || 1) * (transitionState.scale || 1);
     if (seg?.mediaType === 'text') {
-        target.style.transform = `translate(-50%, -50%) translate(${tx}px, ${ty}px) scale(${t.scale})`;
+        target.style.transform = `translate(-50%, -50%) translate(${tx}px, ${ty}px) scale(${scale})`;
     } else {
-        target.style.transform = `translate(${tx}px, ${ty}px) scale(${t.scale})`;
+        target.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
     }
+    target.style.filter = transitionState.filter || 'none';
     if (seg?.id === editorState.previewSegId) updatePreviewScaleHandle();
 }
 
@@ -901,6 +1169,13 @@ function getActiveVideoSegmentsAtTime(t) {
     return layers;
 }
 
+function getPreviewLayerStackAtPoint(x, y) {
+    return document.elementsFromPoint(x, y)
+        .filter(el => el.classList?.contains('preview-layer'))
+        .map(el => el.dataset.segId)
+        .filter(Boolean);
+}
+
 function getActiveEffectSegmentsAtTime(t) {
     const active = [];
     editorState.tracks.forEach(track => {
@@ -914,26 +1189,111 @@ function getActiveEffectSegmentsAtTime(t) {
     return active;
 }
 
+function clearPreviewEffectVars(stage) {
+    EFFECT_CSS_VAR_NAMES.forEach(name => stage.style.removeProperty(name));
+}
+
+function applyPreviewEffectParams(stage, seg) {
+    const key = seg.effectKey || '';
+    const params = normalizeEffectParams(key, seg.effectParams);
+    seg.effectParams = params;
+    if (key === 'zoom-punch') {
+        stage.style.setProperty('--fx-zoom-scale', String(1 + params.strength));
+    }
+    if (key === 'glitch') {
+        stage.style.setProperty('--fx-glitch-shift', `${params.shift}px`);
+        stage.style.setProperty('--fx-glitch-contrast', String(params.contrast));
+    }
+    if (key === 'vhs') {
+        stage.style.setProperty('--fx-vhs-saturation', String(params.saturation));
+        stage.style.setProperty('--fx-vhs-scanlines', String(params.scanlines));
+    }
+    if (key === 'blur-in') {
+        stage.style.setProperty('--fx-blur-max', `${params.amount}px`);
+    }
+    if (key === 'aesthetic-weekend') {
+        stage.style.setProperty('--fx-aw-warmth', String(params.warmth));
+        stage.style.setProperty('--fx-aw-wash', String(params.wash));
+    }
+    if (key === 'retro-glow') {
+        stage.style.setProperty('--fx-rg-sepia', String(params.sepia));
+        stage.style.setProperty('--fx-rg-glow', String(params.glow));
+    }
+    if (key === 'cozy') {
+        stage.style.setProperty('--fx-cozy-warmth', String(params.warmth));
+        stage.style.setProperty('--fx-cozy-softness', String(params.softness));
+    }
+    if (key === 'brew') {
+        stage.style.setProperty('--fx-brew-roast', String(params.roast));
+        stage.style.setProperty('--fx-brew-shade', String(params.shade));
+    }
+    if (key === 'tonal') {
+        stage.style.setProperty('--fx-tonal-mono', String(params.mono));
+        stage.style.setProperty('--fx-tonal-contrast', String(params.contrast));
+    }
+    if (key === 'beach') {
+        stage.style.setProperty('--fx-beach-vibrance', String(params.vibrance));
+        stage.style.setProperty('--fx-beach-sunlight', String(params.sunlight));
+    }
+    if (key === 'color-bomb') {
+        stage.style.setProperty('--fx-cb-saturation', String(params.saturation));
+        stage.style.setProperty('--fx-cb-burst', String(params.burst));
+    }
+    if (key === 'vintage-film') {
+        stage.style.setProperty('--fx-vf-age', String(params.age));
+        stage.style.setProperty('--fx-vf-grain', String(params.grain));
+    }
+    if (key === 'nd3-angel') {
+        stage.style.setProperty('--fx-angel-halo', String(params.halo));
+        stage.style.setProperty('--fx-angel-softness', `${params.softness}px`);
+    }
+}
+
 function updatePreviewEffects(t) {
     const stage = eq('preview-stage');
     if (!stage) return;
-    const classes = ['effect-zoom-punch', 'effect-glitch', 'effect-vhs', 'effect-blur-in'];
+    const classes = [
+        'effect-zoom-punch',
+        'effect-glitch',
+        'effect-vhs',
+        'effect-blur-in',
+        'effect-aesthetic-weekend',
+        'effect-retro-glow',
+        'effect-cozy',
+        'effect-brew',
+        'effect-tonal',
+        'effect-beach',
+        'effect-color-bomb',
+        'effect-vintage-film',
+        'effect-nd3-angel',
+    ];
     classes.forEach(c => stage.classList.remove(c));
+    clearPreviewEffectVars(stage);
     const active = getActiveEffectSegmentsAtTime(t);
     if (!active.length) return;
     active.forEach(seg => {
         const key = seg.effectKey || '';
+        applyPreviewEffectParams(stage, seg);
         if (key === 'zoom-punch') stage.classList.add('effect-zoom-punch');
         if (key === 'glitch') stage.classList.add('effect-glitch');
         if (key === 'vhs') stage.classList.add('effect-vhs');
         if (key === 'blur-in') stage.classList.add('effect-blur-in');
+        if (key === 'aesthetic-weekend') stage.classList.add('effect-aesthetic-weekend');
+        if (key === 'retro-glow') stage.classList.add('effect-retro-glow');
+        if (key === 'cozy') stage.classList.add('effect-cozy');
+        if (key === 'brew') stage.classList.add('effect-brew');
+        if (key === 'tonal') stage.classList.add('effect-tonal');
+        if (key === 'beach') stage.classList.add('effect-beach');
+        if (key === 'color-bomb') stage.classList.add('effect-color-bomb');
+        if (key === 'vintage-film') stage.classList.add('effect-vintage-film');
+        if (key === 'nd3-angel') stage.classList.add('effect-nd3-angel');
     });
 }
 
 function updatePreviewSelection() {
     document.querySelectorAll('.preview-layer').forEach(el => {
         const segId = el.dataset.segId;
-        const isSelected = segId === editorState.previewSegId || segId === editorState.selectedSegId;
+        const isSelected = segId === editorState.previewSegId || isSegmentSelected(segId);
         el.classList.toggle('selected', isSelected);
     });
     updatePreviewScaleHandle();
@@ -1057,7 +1417,7 @@ function renderPreviewLayers(layers, t) {
         }
 
         activeIds.add(seg.id);
-        el.classList.toggle('selected', seg.id === editorState.previewSegId || seg.id === editorState.selectedSegId);
+        el.classList.toggle('selected', seg.id === editorState.previewSegId || isSegmentSelected(seg.id));
         el.style.zIndex = String(1000 - layer.trackIndex);
         el.style.opacity = String(getTransitionOpacity(seg, t));
 
@@ -1180,21 +1540,29 @@ function initPreviewTransformControls() {
             editorState.previewDrag = null;
             stage.classList.remove('dragging');
         }
-        const hit = document.elementsFromPoint(e.clientX, e.clientY)
-            .find(el => el.classList?.contains('preview-layer'));
+        const layerStack = getPreviewLayerStackAtPoint(e.clientX, e.clientY);
+        const hitId = layerStack[0] || null;
+        const hit = hitId ? document.querySelector(`.preview-layer[data-seg-id="${hitId}"]`) : null;
         const isHandle = !!e.target.closest('.text-resize-handle');
         const isScaleHandle = !!e.target.closest('.preview-scale-handle');
         if (hit?.classList?.contains('preview-layer-text') && hit.dataset.editing === '1' && !isHandle) {
             return;
         }
         const active = getActiveVideoSegmentsAtTime(editorState.currentTime || 0);
-        const selectedActive = active.find(l => l.seg.id === editorState.selectedSegId);
-        const targetId = hit?.dataset?.segId || selectedActive?.seg.id;
+        let targetId = null;
+        if (layerStack.length > 1) {
+            const currentIdx = layerStack.indexOf(editorState.previewSegId);
+            targetId = layerStack[(currentIdx + 1 + layerStack.length) % layerStack.length];
+        } else if (layerStack.length === 1) {
+            targetId = layerStack[0];
+        } else {
+            const selectedActive = active.find(l => isSegmentSelected(l.seg.id));
+            targetId = selectedActive?.seg.id || null;
+        }
         if (targetId) {
             editorState.previewSegId = targetId;
-            editorState.selectedSegId = targetId;
             document.querySelectorAll('.tl-segment').forEach(s => {
-                s.classList.toggle('selected', s.dataset.segId === targetId);
+                s.classList.toggle('selected', isSegmentSelected(s.dataset.segId) || s.dataset.segId === targetId);
             });
             updatePreviewSelection();
         }
@@ -1525,39 +1893,50 @@ function syncMediaLibrary() {
     const generated = (window.state?.jobs || [])
         .filter(j => j.status === 'succeeded' && j.videoUrl);
     generated.forEach(job => {
-        const cachedSrc = getCachedEditorVideoSrc(job.id);
-        const existing = editorState.mediaItems.find(m => m.id === job.id);
-        if (existing) {
-            if (cachedSrc && existing.src !== cachedSrc) existing.src = cachedSrc;
-            existing.proxySrc = cachedSrc || '';
-            if (job.thumbDataUrl) existing.thumbDataUrl = job.thumbDataUrl;
-            existing.thumbDisabled = !!job.thumbDisabled;
-            editorState.tracks.forEach(t => {
-                t.segments.forEach(s => {
-                    if (cachedSrc && s.mediaId === job.id && s.src !== cachedSrc) s.src = cachedSrc;
-                });
-            });
-            if (!cachedSrc) ensureEditorVideoCache(job.id);
-            return;
-        }
-        editorState.mediaItems.push({
-            id: job.id,
-            name: (job.prompt || 'Generated Video').slice(0, 30),
-            src: cachedSrc || '',
-            proxySrc: cachedSrc || '',
-            thumbDataUrl: job.thumbDataUrl || null,
-            thumbDisabled: !!job.thumbDisabled,
-            type: 'video',
-            duration: job.duration || 5,
-            source: 'generated',
-        });
-        if (!cachedSrc) ensureEditorVideoCache(job.id);
+        upsertGeneratedVideoInEditor(job, { render: false });
     });
     editorState.mediaItems.forEach(ensureMediaDimensions);
     renderMediaList();
     syncGeneratedMediaFromDB();
 }
 window.syncMediaLibrary = syncMediaLibrary;
+
+function upsertGeneratedMediaItem(media) {
+    if (!media?.id) return null;
+    const existing = editorState.mediaItems.find(m => m.id === media.id);
+    if (existing) {
+        Object.assign(existing, media);
+        existing.source = 'generated';
+        return existing;
+    }
+    const item = { ...media, source: 'generated' };
+    editorState.mediaItems.push(item);
+    return item;
+}
+
+function upsertGeneratedVideoInEditor(job, { render = true } = {}) {
+    if (!job?.id) return null;
+    const cachedSrc = getCachedEditorVideoSrc(job.id);
+    const item = upsertGeneratedMediaItem({
+        id: job.id,
+        name: (job.prompt || 'Generated Video').slice(0, 30),
+        src: cachedSrc || '',
+        proxySrc: cachedSrc || '',
+        thumbDataUrl: job.thumbDataUrl || null,
+        thumbDisabled: !!job.thumbDisabled,
+        type: 'video',
+        duration: job.duration || 5,
+    });
+    editorState.tracks.forEach(t => {
+        t.segments.forEach(s => {
+            if (cachedSrc && s.mediaId === job.id && s.src !== cachedSrc) s.src = cachedSrc;
+        });
+    });
+    if (!cachedSrc) ensureEditorVideoCache(job.id);
+    if (item) ensureMediaDimensions(item);
+    if (render) renderMediaList();
+    return item;
+}
 
 let generatedMediaSyncPromise = null;
 async function syncGeneratedMediaFromDB() {
@@ -1576,38 +1955,34 @@ async function syncGeneratedMediaFromDB() {
             ]);
             images.forEach(record => {
                 if (!record || !record.id) return;
-                if (editorState.mediaItems.some(m => m.id === record.id)) return;
                 const src = record.blob ? URL.createObjectURL(record.blob) : (isEditorCachedSrc(record.blobUrl) ? record.blobUrl : '');
                 if (!src) {
                     ensureEditorMediaCache(record.id, 'image');
                     return;
                 }
-                editorState.mediaItems.push({
+                upsertGeneratedMediaItem({
                     id: record.id,
                     name: (record.prompt || 'Generated Image').slice(0, 30),
                     src,
                     type: 'image',
                     duration: record.duration || 2,
-                    source: 'generated',
                 });
                 changed = true;
             });
             audio.forEach(record => {
                 if (!record || !record.id) return;
-                if (editorState.mediaItems.some(m => m.id === record.id)) return;
                 const src = record.blob ? URL.createObjectURL(record.blob) : (isEditorCachedSrc(record.blobUrl) ? record.blobUrl : '');
                 if (!src) {
                     ensureEditorMediaCache(record.id, 'audio');
                     return;
                 }
-                editorState.mediaItems.push({
+                upsertGeneratedMediaItem({
                     id: record.id,
                     name: (record.prompt || 'Generated Audio').slice(0, 30),
                     src,
                     thumbDataUrl: record.thumbDataUrl || null,
                     type: 'audio',
                     duration: record.duration || 10,
-                    source: 'generated',
                 });
                 changed = true;
             });
@@ -1619,68 +1994,67 @@ async function syncGeneratedMediaFromDB() {
     generatedMediaSyncPromise = null;
 }
 
+window.addGeneratedVideoToEditor = function addGeneratedVideoToEditor(record) {
+    if (!record || !record.id) return;
+    upsertGeneratedVideoInEditor(record);
+};
+
 window.addGeneratedImageToEditor = function addGeneratedImageToEditor(record) {
     if (!record || !record.id) return;
-    if (editorState.mediaItems.some(m => m.id === record.id)) return;
     const src = record.blob ? URL.createObjectURL(record.blob) : (isEditorCachedSrc(record.blobUrl) ? record.blobUrl : '');
     if (!src) {
         if (window.ensureImageCached) {
             window.ensureImageCached(record.id, { silent: true }).then(cachedSrc => {
-                if (!cachedSrc || editorState.mediaItems.some(m => m.id === record.id)) return;
-                editorState.mediaItems.push({
+                if (!cachedSrc) return;
+                upsertGeneratedMediaItem({
                     id: record.id,
                     name: (record.prompt || 'Generated Image').slice(0, 30),
                     src: cachedSrc,
                     type: 'image',
                     duration: record.duration || 2,
-                    source: 'generated',
                 });
                 renderMediaList();
             }).catch(() => {});
         }
         return;
     }
-    editorState.mediaItems.push({
+    upsertGeneratedMediaItem({
         id: record.id,
         name: (record.prompt || 'Generated Image').slice(0, 30),
         src,
         type: 'image',
         duration: record.duration || 2,
-        source: 'generated',
     });
     renderMediaList();
 };
 
 window.addGeneratedAudioToEditor = function addGeneratedAudioToEditor(record) {
     if (!record || !record.id) return;
-    if (editorState.mediaItems.some(m => m.id === record.id)) return;
     const src = record.blob ? URL.createObjectURL(record.blob) : (isEditorCachedSrc(record.blobUrl) ? record.blobUrl : '');
     if (!src) {
         if (window.ensureAudioCached) {
             window.ensureAudioCached(record.id, { silent: true }).then(cachedSrc => {
-                if (!cachedSrc || editorState.mediaItems.some(m => m.id === record.id)) return;
-                editorState.mediaItems.push({
+                if (!cachedSrc) return;
+                upsertGeneratedMediaItem({
                     id: record.id,
                     name: (record.prompt || 'Generated Audio').slice(0, 30),
                     src: cachedSrc,
                     thumbDataUrl: record.thumbDataUrl || null,
                     type: 'audio',
                     duration: record.duration || 10,
-                    source: 'generated',
                 });
                 renderMediaList();
             }).catch(() => {});
         }
         return;
     }
-    editorState.mediaItems.push({
+    upsertGeneratedMediaItem({
         id: record.id,
         name: (record.prompt || 'Generated Audio').slice(0, 30),
         src,
         thumbDataUrl: record.thumbDataUrl || null,
         type: 'audio',
         duration: record.duration || 10,
-        source: 'generated',
     });
     renderMediaList();
 };
@@ -1716,6 +2090,13 @@ function setGeneratedMediaTab(tab, { silent = false } = {}) {
     if (!silent) renderMediaList();
 }
 
+function hasGeneratedMediaThumbnail(media) {
+    if (!media || media.source !== 'generated') return true;
+    if (media.type === 'video' || media.type === 'audio') return !!media.thumbDataUrl;
+    if (media.type === 'image') return !!getEditorMediaPlaybackSrc(media);
+    return true;
+}
+
 function renderMediaList() {
     const genVideoEl = eq('media-generated-video');
     const genImageEl = eq('media-generated-image');
@@ -1733,7 +2114,7 @@ function renderMediaList() {
         else m.source = m.type === 'audio' ? 'upload' : 'generated';
     });
     const uploads = editorState.mediaItems.filter(m => m.source === 'upload');
-    const generated = editorState.mediaItems.filter(m => m.source === 'generated');
+    const generated = editorState.mediaItems.filter(m => m.source === 'generated' && hasGeneratedMediaThumbnail(m));
     const generatedVideos = generated.filter(m => m.type === 'video');
     const generatedImages = generated.filter(m => m.type === 'image');
     const generatedAudio = generated.filter(m => m.type === 'audio');
@@ -2389,6 +2770,7 @@ async function saveProject({ autosave = false, silent = false } = {}) {
             letterSpacing: m.letterSpacing ?? null,
             underline: m.underline ?? null,
             effectKey: m.effectKey || null,
+            effectParams: cloneEffectParams(m.effectParams),
             presetKey: m.presetKey || null,
             boxW: m.boxW ?? null,
             boxH: m.boxH ?? null,
@@ -2461,6 +2843,7 @@ async function saveProject({ autosave = false, silent = false } = {}) {
                 letterSpacing: s.letterSpacing ?? null,
                 underline: s.underline ?? null,
                 effectKey: s.effectKey || null,
+                effectParams: cloneEffectParams(s.effectParams),
                 presetKey: s.presetKey || null,
                 boxW: s.boxW ?? null,
                 boxH: s.boxH ?? null,
@@ -2671,6 +3054,7 @@ async function applyProjectData(data) {
             letterSpacing: m.letterSpacing ?? null,
             underline: m.underline ?? null,
             effectKey: m.effectKey || null,
+            effectParams: cloneEffectParams(m.effectParams),
             presetKey: m.presetKey || null,
             boxW: m.boxW ?? null,
             boxH: m.boxH ?? null,
@@ -2683,6 +3067,9 @@ async function applyProjectData(data) {
     }));
     editorState.mediaItems.forEach(m => {
         if (!m.source && m.type === 'text') m.source = 'text';
+        if (m.type === 'effect' && m.effectKey) {
+            m.effectParams = normalizeEffectParams(m.effectKey, m.effectParams);
+        }
     });
     editorState.tracks = data.tracks.map(t => ({
         id: t.id,
@@ -2715,11 +3102,19 @@ async function applyProjectData(data) {
             letterSpacing: s.letterSpacing ?? null,
             underline: s.underline ?? null,
             effectKey: s.effectKey || null,
+            effectParams: cloneEffectParams(s.effectParams),
             presetKey: s.presetKey || null,
             boxW: s.boxW ?? null,
             boxH: s.boxH ?? null,
         })),
     }));
+    editorState.tracks.forEach(track => {
+        track.segments.forEach(seg => {
+            if (seg.mediaType === 'effect' && seg.effectKey) {
+                seg.effectParams = normalizeEffectParams(seg.effectKey, seg.effectParams);
+            }
+        });
+    });
 
     if (cachedVideoBlobs.size && window.dbPut && window.db) {
         const timestamp = new Date().toISOString();
@@ -2735,14 +3130,14 @@ async function applyProjectData(data) {
             }).catch(() => {});
         });
     }
-    editorState.transitions = Array.isArray(data.transitions) ? data.transitions : [];
+    editorState.transitions = Array.isArray(data.transitions) ? data.transitions.map(t => normalizeTransitionData(t)) : [];
 
     const maxEnd = editorState.tracks.flatMap(t => t.segments).reduce((m, s) => Math.max(m, (s.start || 0) + (s.duration || 0)), 0);
     const baseDur = Math.max(TIMELINE_MIN_SECONDS, maxEnd + TIMELINE_TAIL_SECONDS);
     editorState.timelineDur = Math.max(data.timelineDur || 0, baseDur);
     editorState.pxPerSec = data.pxPerSec || editorState.pxPerSec;
     editorState.currentTime = 0;
-    editorState.selectedSegId = null;
+    clearSelectedSegments();
     renderMediaList();
     renderTimeline();
     seekTo(0);
@@ -3093,6 +3488,44 @@ function renderTracks() {
             e.preventDefault();
             handleTransitionContextMenu(e, track, row);
         });
+        row.addEventListener('mousemove', e => {
+            if (track.type !== 'video') {
+                row.classList.remove('transition-hotspot');
+                return;
+            }
+            if (e.target.closest('.tl-seg-trim') || e.target.closest('.tl-seg-del') || e.target.closest('.tl-seg-mute-btn')) {
+                row.classList.remove('transition-hotspot');
+                return;
+            }
+            const scrollLeft = eq('tl-scroll-area').scrollLeft;
+            const rect = row.getBoundingClientRect();
+            const t = (e.clientX - rect.left + scrollLeft) / editorState.pxPerSec;
+            row.classList.toggle('transition-hotspot', !!findTransitionPair(track, t));
+        });
+        row.addEventListener('mouseleave', () => {
+            row.classList.remove('transition-hotspot');
+        });
+        row.addEventListener('click', e => {
+            if (!e.target.closest('.tl-segment') && !e.target.closest('.tl-transition-hit')) {
+                clearSelectedSegments();
+                updatePreviewSelection();
+                renderTracks();
+                return;
+            }
+            if (track.type !== 'video') return;
+            if (e.button !== 0) return;
+            if (e.target.closest('.tl-seg-trim') || e.target.closest('.tl-seg-del') || e.target.closest('.tl-seg-mute-btn')) return;
+            const scrollLeft = eq('tl-scroll-area').scrollLeft;
+            const rect = row.getBoundingClientRect();
+            const t = (e.clientX - rect.left + scrollLeft) / editorState.pxPerSec;
+            const pair = findTransitionPair(track, t);
+            if (!pair) return;
+            const existing = getTransitionByPair(pair.left.id, pair.right.id);
+            if (existing) return;
+            pushTimelineHistory();
+            addTransition(pair.left.id, pair.right.id, 'cross-dissolve');
+            renderTimeline();
+        });
 
         track.segments.forEach(seg => row.appendChild(createSegmentEl(seg, track)));
         renderTransitionsForTrack(row, track);
@@ -3128,21 +3561,35 @@ function initTransitionContextDelegate() {
         handleTransitionContextMenu(e, track, row);
     });
 }
-function getSnapInfo(track, proposedStart, duration, excludeSegId) {
-    const snapSec = 12 / editorState.pxPerSec;
+
+function getTimelineSnapPoints(excludeSegId) {
     const points = [0];
-    track.segments.forEach(s => {
-        if (s.id === excludeSegId) return;
-        points.push((s.start || 0) + (s.duration || 0));
+    editorState.tracks.forEach(track => {
+        track.segments.forEach(seg => {
+            if (seg.id === excludeSegId) return;
+            points.push(seg.start || 0);
+            points.push((seg.start || 0) + (seg.duration || 0));
+        });
     });
+    return points;
+}
+
+function findNearestSnapPoint(time, excludeSegId, minTime = -Infinity, maxTime = Infinity) {
+    const snapSec = 12 / editorState.pxPerSec;
+    const points = getTimelineSnapPoints(excludeSegId)
+        .filter(point => point >= minTime && point <= maxTime);
     let best = null;
-    points.forEach(p => {
-        const d = Math.abs(proposedStart - p);
-        if (best === null || d < best.dist) best = { dist: d, point: p };
+    points.forEach(point => {
+        const dist = Math.abs(time - point);
+        if (best === null || dist < best.dist) best = { dist, point };
     });
-    if (best && best.dist <= snapSec) {
-        return { snapped: true, start: best.point };
-    }
+    if (best && best.dist <= snapSec) return best.point;
+    return null;
+}
+
+function getSnapInfo(track, proposedStart, duration, excludeSegId) {
+    const point = findNearestSnapPoint(proposedStart, excludeSegId, 0);
+    if (point != null) return { snapped: true, start: point };
     return { snapped: false, start: proposedStart };
 }
 
@@ -3196,7 +3643,7 @@ function getNeighborBounds(track, segId) {
 }
 
 function findTransitionPair(track, time) {
-    const snapSec = 12 / editorState.pxPerSec;
+    const snapSec = 28 / editorState.pxPerSec;
     const maxGapSec = 1.0;
     const segs = [...track.segments].sort((a, b) => a.start - b.start);
     for (let i = 0; i < segs.length - 1; i++) {
@@ -3206,7 +3653,7 @@ function findTransitionPair(track, time) {
         const gap = (right.start || 0) - boundary;
         if (gap < 0) continue;
         const nearBoundary = Math.abs(time - boundary) <= snapSec;
-        const withinGap = time >= boundary - snapSec && time <= (right.start || 0) + snapSec;
+        const withinGap = time >= boundary - snapSec * 1.5 && time <= (right.start || 0) + snapSec * 1.5;
         if ((nearBoundary || withinGap) && gap <= maxGapSec) {
             return { left, right };
         }
@@ -3216,57 +3663,142 @@ function findTransitionPair(track, time) {
 
 function renderTransitionsForTrack(row, track) {
     const px = editorState.pxPerSec;
-    editorState.transitions.forEach(t => {
-        const left = track.segments.find(s => s.id === t.leftId);
-        const right = track.segments.find(s => s.id === t.rightId);
-        if (!left || !right) return;
+    const segs = [...track.segments].sort((a, b) => a.start - b.start);
+    for (let i = 0; i < segs.length - 1; i += 1) {
+        const left = segs[i];
+        const right = segs[i + 1];
         const boundary = (left.start || 0) + (left.duration || 0);
         const gap = (right.start || 0) - boundary;
-        if (gap > (12 / px)) return;
+        if (gap < 0 || gap > 1.0) continue;
+        const existing = getTransitionByPair(left.id, right.id);
+        const hit = document.createElement('div');
+        hit.className = `tl-transition-hit${existing ? ' has-transition' : ''}`;
+        hit.style.left = (boundary * px) + 'px';
+        hit.title = existing
+            ? `Transition: ${transitionLabel(existing.type)}`
+            : 'Click to add cross dissolve';
+        hit.addEventListener('click', e => {
+            e.stopPropagation();
+            if (existing) return;
+            pushTimelineHistory();
+            addTransition(left.id, right.id, 'cross-dissolve');
+            renderTimeline();
+        });
+        hit.addEventListener('contextmenu', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            showTransitionMenu(e.clientX, e.clientY, left, right);
+        });
+        row.appendChild(hit);
+        if (!existing) continue;
         const el = document.createElement('div');
-        el.className = `tl-transition ${t.type}`;
-        el.style.left = (boundary * px) + 'px';
-        el.title = `Transition: ${transitionLabel(t.type)}`;
-        row.appendChild(el);
-    });
+        el.className = `tl-transition ${existing.type}`;
+        el.title = `Transition: ${transitionLabel(existing.type)}`;
+        hit.appendChild(el);
+    }
 }
 
 function transitionLabel(type) {
-    if (type === 'fade-in') return 'Fade In';
-    if (type === 'fade-out') return 'Fade Out';
-    return 'Crossfade';
+    return getTransitionPreset(type).label;
 }
 
 function showTransitionMenu(x, y, left, right) {
     hideTransitionMenu();
     hideSegmentMenu();
-    const existing = editorState.transitions.find(t => t.leftId === left.id && t.rightId === right.id);
+    let existing = getTransitionByPair(left.id, right.id);
     const menu = document.createElement('div');
     menu.className = 'tl-context-menu';
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
-    const items = [
-        { id: 'fade-in', label: 'Add Fade In' },
-        { id: 'fade-out', label: 'Add Fade Out' },
-        { id: 'crossfade', label: 'Add Crossfade' },
-    ];
     menu.innerHTML = `
         <div class="tl-context-title">Transition</div>
-        ${items.map(i => `<button data-action="${i.id}">${i.label}</button>`).join('')}
-        ${existing ? `<button class="danger" data-action="remove">Remove Transition</button>` : ''}
+        <label class="tl-context-label">Preset</label>
+        <select data-field="transitionType">
+            ${TRANSITION_PRESETS.map(p => `<option value="${p.key}">${p.label}</option>`).join('')}
+        </select>
+        <div class="tl-context-effect-params"></div>
+        ${existing ? '<button class="danger" data-action="remove">Remove Transition</button>' : ''}
     `;
+    const historySnapshot = snapshotTimelineState();
+    let historyPushed = false;
+    const typeEl = menu.querySelector('[data-field="transitionType"]');
+    const paramsEl = menu.querySelector('.tl-context-effect-params');
+    const pushHistoryOnce = () => {
+        if (historyPushed) return;
+        pushTimelineHistory(historySnapshot);
+        historyPushed = true;
+    };
+    const ensureTransition = () => {
+        if (existing) return existing;
+        pushHistoryOnce();
+        existing = addTransition(left.id, right.id, 'cross-dissolve');
+        return existing;
+    };
+    const renderParams = () => {
+        const transition = existing || { type: typeEl.value, params: getDefaultTransitionParams(typeEl.value) };
+        const defs = getTransitionParamDefs(typeEl.value);
+        const params = normalizeTransitionParams(typeEl.value, transition.params);
+        if (existing) existing.params = params;
+        if (!defs.length) {
+            paramsEl.innerHTML = '<div class="media-empty-hint">No parameters</div>';
+            return;
+        }
+        paramsEl.innerHTML = defs.map(def => `
+            <label class="tl-context-label">${def.label}</label>
+            <div class="tl-context-range-row">
+                <input type="range" min="${def.min}" max="${def.max}" step="${def.step}" value="${params[def.key]}" data-param="${def.key}" />
+                <span class="tl-context-range-value" data-value-for="${def.key}">${params[def.key]}</span>
+            </div>
+        `).join('');
+        paramsEl.querySelectorAll('input[data-param]').forEach(input => {
+            const valueEl = paramsEl.querySelector(`[data-value-for="${input.dataset.param}"]`);
+            const syncValue = () => {
+                const num = Number(input.value);
+                valueEl.textContent = Number.isInteger(num) ? String(num) : num.toFixed(2).replace(/\.00$/, '').replace(/0$/, '');
+            };
+            syncValue();
+            input.addEventListener('input', () => {
+                const transitionRef = ensureTransition();
+                transitionRef.type = normalizeTransitionType(typeEl.value);
+                transitionRef.params = normalizeTransitionParams(transitionRef.type, {
+                    ...transitionRef.params,
+                    [input.dataset.param]: Number(input.value),
+                });
+                syncValue();
+                updatePreviewForTime(editorState.currentTime || 0);
+            });
+            input.addEventListener('change', () => {
+                renderTimeline();
+            });
+        });
+    };
+    const activeType = existing ? existing.type : 'cross-dissolve';
+    typeEl.value = activeType;
+    renderParams();
+    const onTypeChange = () => {
+        const transitionRef = ensureTransition();
+        pushHistoryOnce();
+        transitionRef.type = normalizeTransitionType(typeEl.value);
+        transitionRef.params = getDefaultTransitionParams(transitionRef.type);
+        renderParams();
+        renderTimeline();
+    };
+    typeEl.addEventListener('input', onTypeChange);
+    typeEl.addEventListener('change', onTypeChange);
     const onClick = e => {
         const action = e.target?.dataset?.action;
         if (!action) return;
         if (action === 'remove') {
+            pushHistoryOnce();
             removeTransition(left.id, right.id);
-        } else {
-            addTransition(left.id, right.id, action);
+            existing = null;
         }
         hideTransitionMenu();
         renderTimeline();
     };
     menu.addEventListener('click', onClick);
+    menu.addEventListener('click', e => e.stopPropagation());
+    menu.addEventListener('input', e => e.stopPropagation());
     document.body.appendChild(menu);
     editorState.transitionMenuEl = menu;
     setTimeout(() => {
@@ -3341,36 +3873,108 @@ function showEffectSegmentMenu(x, y, seg) {
     menu.className = 'tl-context-menu';
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
-    const options = [
-        { key: 'zoom-punch', label: 'Zoom Punch' },
-        { key: 'glitch', label: 'Glitch' },
-        { key: 'vhs', label: 'VHS' },
-        { key: 'blur-in', label: 'Blur In' },
-    ];
     menu.innerHTML = `
         <div class="tl-context-title">Effect</div>
-        ${options.map(o => `
-            <button data-action="set" data-key="${o.key}">
-                ${o.label}${seg.effectKey === o.key ? ' ✓' : ''}
-            </button>
-        `).join('')}
+        <label class="tl-context-label">Preset</label>
+        <select data-field="effectKey">
+            ${EFFECT_PRESETS.map(p => `<option value="${p.key}">${p.name}</option>`).join('')}
+        </select>
+        <div class="tl-context-effect-params"></div>
+        <button data-action="reset">Reset Parameters</button>
         <button class="danger" data-action="remove">Remove Effect</button>
     `;
+    const historySnapshot = snapshotTimelineState();
+    let historyPushed = false;
+    const presetEl = menu.querySelector('[data-field="effectKey"]');
+    const paramsEl = menu.querySelector('.tl-context-effect-params');
+    const currentPreset = getEffectPreset(seg.effectKey || 'zoom-punch');
+    presetEl.value = currentPreset.key;
+    seg.effectKey = currentPreset.key;
+    seg.name = currentPreset.name;
+    seg.effectParams = normalizeEffectParams(currentPreset.key, seg.effectParams);
+
+    const pushHistoryOnce = () => {
+        if (historyPushed) return;
+        pushTimelineHistory(historySnapshot);
+        historyPushed = true;
+    };
+
+    const updatePreview = (rerender = false) => {
+        if (rerender) renderTimeline();
+        updatePreviewForTime(editorState.currentTime || 0);
+    };
+
+    const renderParamControls = () => {
+        const defs = getEffectParamDefs(seg.effectKey);
+        const params = normalizeEffectParams(seg.effectKey, seg.effectParams);
+        seg.effectParams = params;
+        if (!defs.length) {
+            paramsEl.innerHTML = '<div class="media-empty-hint">No parameters</div>';
+            return;
+        }
+        paramsEl.innerHTML = defs.map(def => `
+            <label class="tl-context-label">${def.label}</label>
+            <div class="tl-context-range-row">
+                <input type="range" min="${def.min}" max="${def.max}" step="${def.step}" value="${params[def.key]}" data-param="${def.key}" />
+                <span class="tl-context-range-value" data-value-for="${def.key}">${params[def.key]}</span>
+            </div>
+        `).join('');
+        paramsEl.querySelectorAll('input[data-param]').forEach(input => {
+            const valueEl = paramsEl.querySelector(`[data-value-for="${input.dataset.param}"]`);
+            const syncValue = () => {
+                const num = Number(input.value);
+                valueEl.textContent = Number.isInteger(num) ? String(num) : num.toFixed(2).replace(/\.00$/, '').replace(/0$/, '');
+            };
+            syncValue();
+            input.addEventListener('input', () => {
+                pushHistoryOnce();
+                seg.effectParams[input.dataset.param] = Number(input.value);
+                syncValue();
+                updatePreview(false);
+            });
+            input.addEventListener('change', () => {
+                seg.effectParams[input.dataset.param] = Number(input.value);
+                syncValue();
+                updatePreview(false);
+            });
+        });
+    };
+
+    renderParamControls();
+
+    const onPresetChange = () => {
+        const preset = getEffectPreset(presetEl.value);
+        pushHistoryOnce();
+        seg.effectKey = preset.key;
+        seg.name = preset.name;
+        seg.effectParams = getDefaultEffectParams(preset.key);
+        renderParamControls();
+        updatePreview(true);
+    };
+    presetEl.addEventListener('input', onPresetChange);
+    presetEl.addEventListener('change', onPresetChange);
+
     const onClick = e => {
         const action = e.target?.dataset?.action;
         if (!action) return;
-        if (action === 'set') {
-            seg.effectKey = e.target.dataset.key || seg.effectKey;
+        if (action === 'reset') {
+            pushHistoryOnce();
+            seg.effectParams = getDefaultEffectParams(seg.effectKey);
+            renderParamControls();
+            updatePreview(false);
         }
         if (action === 'remove') {
+            pushHistoryOnce();
             const track = findTrackBySegId(seg.id);
             if (track) track.segments = track.segments.filter(s => s.id !== seg.id);
+            renderTimeline();
+            updatePreviewForTime(editorState.currentTime || 0);
         }
         hideSegmentMenu();
-        renderTimeline();
-        updatePreviewForTime(editorState.currentTime || 0);
     };
     menu.addEventListener('click', onClick);
+    menu.addEventListener('input', e => e.stopPropagation());
+    menu.addEventListener('click', e => e.stopPropagation());
     document.body.appendChild(menu);
     editorState.segmentMenuEl = menu;
     setTimeout(() => {
@@ -3622,18 +4226,23 @@ function hidePlayheadMenu() {
     }
 }
 
-function addTransition(leftId, rightId, type) {
+function addTransition(leftId, rightId, type, params = null) {
+    const normalized = normalizeTransitionData({ leftId, rightId, type, params });
     const existing = editorState.transitions.find(t => t.leftId === leftId && t.rightId === rightId);
     if (existing) {
-        existing.type = type;
-        return;
+        existing.type = normalized.type;
+        existing.params = normalized.params;
+        return existing;
     }
-    editorState.transitions.push({
+    const next = {
         id: `tr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         leftId,
         rightId,
-        type,
-    });
+        type: normalized.type,
+        params: normalized.params,
+    };
+    editorState.transitions.push(next);
+    return next;
 }
 
 function removeTransition(leftId, rightId) {
@@ -3722,6 +4331,7 @@ function cloneSegmentData(seg) {
         letterSpacing: seg.letterSpacing ?? null,
         underline: !!seg.underline,
         effectKey: seg.effectKey || null,
+        effectParams: cloneEffectParams(seg.effectParams),
         presetKey: seg.presetKey || null,
         boxW: seg.boxW ?? null,
         boxH: seg.boxH ?? null,
@@ -3786,8 +4396,7 @@ function pasteClipboardSegment() {
     delete seg._mediaW;
     delete seg._mediaH;
     target.segments.push(seg);
-    editorState.selectedSegId = seg.id;
-    editorState.previewSegId = seg.id;
+    setSelectedSegments([seg.id], seg.id);
     renderTimeline();
     showToast('Clip pasted', 'success', '📋');
     return true;
@@ -3999,7 +4608,7 @@ function createSegmentEl(seg, track) {
         if (media?.thumbDataUrl) seg.thumbDataUrl = media.thumbDataUrl;
     }
     const needsLoad = !!seg.src && seg.mediaType === 'image';
-    el.className = `tl-segment ${track.type}-seg${seg.muted && isAudio ? ' muted' : ''}${editorState.selectedSegId === seg.id ? ' selected' : ''}${fadeInCls}${fadeOutCls}${needsLoad ? ' loading' : ''}`;
+    el.className = `tl-segment ${track.type}-seg${seg.muted && isAudio ? ' muted' : ''}${isSegmentSelected(seg.id) ? ' selected' : ''}${fadeInCls}${fadeOutCls}${needsLoad ? ' loading' : ''}`;
     el.dataset.segId = seg.id;
     el.style.left = (seg.start * editorState.pxPerSec) + 'px';
     el.style.width = (seg.duration * editorState.pxPerSec) + 'px';
@@ -4070,12 +4679,58 @@ function createSegmentEl(seg, track) {
             t2.classList.contains('tl-seg-mute-btn') || t2.closest('.tl-seg-mute-btn') ||
             t2.classList.contains('tl-seg-trim')) return;
         e.preventDefault();
+        const wasMultiSelected = isSegmentSelected(seg.id) && getSelectedSegIds().length > 1;
 
-        editorState.selectedSegId = seg.id;
-        editorState.previewSegId = seg.id;
-        document.querySelectorAll('.tl-segment').forEach(s => s.classList.remove('selected'));
-        el.classList.add('selected');
+        if (e.shiftKey) {
+            toggleSelectedSegment(seg.id);
+            document.querySelectorAll('.tl-segment').forEach(s => {
+                s.classList.toggle('selected', isSegmentSelected(s.dataset.segId));
+            });
+            updatePreviewSelection();
+            return;
+        } else if (!wasMultiSelected) {
+            setSelectedSegments([seg.id], seg.id);
+        }
+        document.querySelectorAll('.tl-segment').forEach(s => {
+            s.classList.toggle('selected', isSegmentSelected(s.dataset.segId));
+        });
         updatePreviewSelection();
+
+        const selectedEntries = getSelectedSegments();
+        if (selectedEntries.length > 1 && isSegmentSelected(seg.id)) {
+            const historySnapshot = snapshotTimelineState();
+            const baseStarts = new Map(selectedEntries.map(entry => [entry.seg.id, entry.seg.start || 0]));
+            const bounds = getMultiDragBounds(selectedEntries);
+            const selectedEls = selectedEntries
+                .map(entry => document.querySelector(`.tl-segment[data-seg-id="${entry.seg.id}"]`))
+                .filter(Boolean);
+            selectedEls.forEach(node => { node.style.opacity = '0.45'; });
+
+            function onMove(mv) {
+                const delta = (mv.clientX - e.clientX) / editorState.pxPerSec;
+                const clampedDelta = Math.max(bounds.minDelta, Math.min(bounds.maxDelta, delta));
+                selectedEntries.forEach(({ seg }) => {
+                    seg.start = (baseStarts.get(seg.id) || 0) + clampedDelta;
+                });
+                selectedEntries.forEach(({ seg }) => {
+                    const node = document.querySelector(`.tl-segment[data-seg-id="${seg.id}"]`);
+                    if (node) node.style.left = `${seg.start * editorState.pxPerSec}px`;
+                });
+            }
+
+            function onUp() {
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                selectedEls.forEach(node => { node.style.opacity = ''; });
+                const changed = selectedEntries.some(({ seg }) => Math.abs((seg.start || 0) - (baseStarts.get(seg.id) || 0)) > 1e-6);
+                if (changed) pushTimelineHistory(historySnapshot);
+                renderTimeline();
+            }
+
+            document.addEventListener('pointermove', onMove);
+            document.addEventListener('pointerup', onUp);
+            return;
+        }
 
         const origRect = el.getBoundingClientRect();
         const origTrackId = track.id;
@@ -4230,12 +4885,21 @@ function createSegmentEl(seg, track) {
         e.preventDefault(); e.stopPropagation();
         trimL.setPointerCapture(e.pointerId);
         const sx = e.clientX, os = seg.start, od = seg.duration;
+        const row = el.closest('.tl-track-row');
         const historySnapshot = snapshotTimelineState();
         function onMove(mv) {
             const dx = (mv.clientX - sx) / editorState.pxPerSec;
-            let newStart = Math.max(0, Math.min(os + od - 0.25, os + dx));
             const neighbor = getNeighborBounds(track, seg.id);
-            if (neighbor.prevEnd != null) newStart = Math.max(newStart, neighbor.prevEnd);
+            const minStart = Math.max(0, neighbor.prevEnd ?? 0);
+            const maxStart = os + od - 0.25;
+            let newStart = Math.max(minStart, Math.min(maxStart, os + dx));
+            const snapped = findNearestSnapPoint(newStart, seg.id, minStart, maxStart);
+            if (snapped != null) {
+                newStart = snapped;
+                if (row) setSnapLine(row, newStart * editorState.pxPerSec);
+            } else if (row) {
+                clearSnapLine(row);
+            }
             seg.start = newStart; seg.duration = od - (newStart - os);
             el.style.left = (newStart * editorState.pxPerSec) + 'px';
             el.style.width = (seg.duration * editorState.pxPerSec) + 'px';
@@ -4243,6 +4907,7 @@ function createSegmentEl(seg, track) {
         trimL.addEventListener('pointermove', onMove);
         trimL.addEventListener('pointerup', () => {
             trimL.removeEventListener('pointermove', onMove);
+            if (row) clearSnapLine(row);
             if (Math.abs(seg.start - os) > 1e-6 || Math.abs(seg.duration - od) > 1e-6) {
                 pushTimelineHistory(historySnapshot);
             }
@@ -4256,10 +4921,22 @@ function createSegmentEl(seg, track) {
         e.preventDefault(); e.stopPropagation();
         trimR.setPointerCapture(e.pointerId);
         const sx = e.clientX, od = seg.duration;
+        const row = el.closest('.tl-track-row');
         const historySnapshot = snapshotTimelineState();
         function onMove(mv) {
-            let newDur = Math.max(0.25, od + (mv.clientX - sx) / editorState.pxPerSec);
             const neighbor = getNeighborBounds(track, seg.id);
+            const minEnd = seg.start + 0.25;
+            const maxEnd = neighbor.nextStart != null ? neighbor.nextStart : Infinity;
+            let newEnd = Math.max(minEnd, seg.start + od + (mv.clientX - sx) / editorState.pxPerSec);
+            if (Number.isFinite(maxEnd)) newEnd = Math.min(newEnd, maxEnd);
+            const snapped = findNearestSnapPoint(newEnd, seg.id, minEnd, maxEnd);
+            if (snapped != null) {
+                newEnd = snapped;
+                if (row) setSnapLine(row, newEnd * editorState.pxPerSec);
+            } else if (row) {
+                clearSnapLine(row);
+            }
+            let newDur = Math.max(0.25, newEnd - seg.start);
             if (neighbor.nextStart != null) {
                 const maxDur = Math.max(0.25, neighbor.nextStart - seg.start);
                 newDur = Math.min(newDur, maxDur);
@@ -4270,6 +4947,7 @@ function createSegmentEl(seg, track) {
         trimR.addEventListener('pointermove', onMove);
         trimR.addEventListener('pointerup', () => {
             trimR.removeEventListener('pointermove', onMove);
+            if (row) clearSnapLine(row);
             if (Math.abs(seg.duration - od) > 1e-6) {
                 pushTimelineHistory(historySnapshot);
             }
@@ -4386,6 +5064,7 @@ function dropMediaOnTrack(trackId, mediaId, startTime) {
     }
     if (media.type === 'effect') {
         seg.effectKey = media.effectKey || null;
+        seg.effectParams = normalizeEffectParams(seg.effectKey, media.effectParams);
     }
     track.segments.push(seg);
     renderTimeline();
@@ -4407,6 +5086,10 @@ function removeSegment(trackId, segId, { skipHistory = false } = {}) {
     if (!skipHistory) pushTimelineHistory();
     if (track) track.segments = track.segments.filter(s => s.id !== segId);
     editorState.transitions = editorState.transitions.filter(t => t.leftId !== segId && t.rightId !== segId);
+    if (isSegmentSelected(segId)) {
+        setSelectedSegments(getSelectedSegIds().filter(id => id !== segId));
+    }
+    if (editorState.previewSegId === segId) editorState.previewSegId = null;
     renderTimeline();
 }
 
@@ -4440,6 +5123,8 @@ function clearTimeline() {
     pushTimelineHistory();
     editorState.tracks.forEach(t => t.segments = []);
     editorState.transitions = [];
+    clearSelectedSegments();
+    editorState.previewSegId = null;
     renderTimeline();
 }
 
@@ -4474,6 +5159,7 @@ function stopPlayback() {
             if (seg._audioEl && !seg._audioEl.paused) seg._audioEl.pause();
         });
     });
+    if (editorState.exporting) pauseExportAudio();
 }
 
 function rafTick(now) {
@@ -4519,8 +5205,15 @@ function seekTo(t) {
 function updatePreviewForTime(t) {
     const emptyEl = eq('preview-empty');
     const hasAnyVideo = editorState.tracks.some(tk => tk.type === 'video' && tk.segments.length);
-    const layers = getActiveVideoSegmentsAtTime(t);
+    let layers = getActiveVideoSegmentsAtTime(t);
+    const contentEnd = getTimelineContentEnd(['video', 'image', 'text']);
+    if (!layers.length && hasAnyVideo && contentEnd > 0 && t >= contentEnd) {
+        layers = getActiveVideoSegmentsAtTime(Math.max(0, contentEnd - 1 / 60));
+    }
     updatePreviewEffects(t);
+    const audibleVideoSegId = layers
+        .filter(layer => layer.seg.mediaType === 'video' && !layer.seg.muted)
+        .sort((a, b) => a.trackIndex - b.trackIndex)[0]?.seg.id || null;
 
     if (layers.length) {
         layers.forEach(layer => {
@@ -4579,6 +5272,10 @@ function updatePreviewForTime(t) {
             }
         }
     }
+
+    if (editorState.exporting) {
+        syncExportAudio(t, audibleVideoSegId);
+    }
 }
 
 function renderPlayhead() {
@@ -4631,6 +5328,8 @@ async function startExport() {
             return;
         }
         stream = canvas.captureStream(30);
+        const mixedAudioTracks = getExportAudioTracks();
+        mixedAudioTracks.forEach(track => stream.addTrack(track));
     } catch (e) {
         showToast('Export failed to capture the export stream', 'error', '❌');
         return;
@@ -4656,6 +5355,7 @@ async function startExport() {
         editorState.exportSpeed = 1;
         editorState.exportCanvas = null;
         editorState.exportCtx = null;
+        cleanupExportAudio();
         if (editorState.exportWindow && !editorState.exportWindow.closed) {
             editorState.exportWindow.close();
         }
@@ -4812,6 +5512,130 @@ function ensureExportCanvas() {
     return { canvas, ctx };
 }
 
+function ensureExportAudioGraph() {
+    if (editorState.exportAudioContext && editorState.exportAudioDestination) {
+        return {
+            context: editorState.exportAudioContext,
+            destination: editorState.exportAudioDestination,
+        };
+    }
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    const context = new Ctx();
+    const destination = context.createMediaStreamDestination();
+    editorState.exportAudioContext = context;
+    editorState.exportAudioDestination = destination;
+    return { context, destination };
+}
+
+function getExportAudioTracks() {
+    const graph = ensureExportAudioGraph();
+    if (!graph) return [];
+    return graph.destination.stream.getAudioTracks();
+}
+
+function getExportMediaElement(seg, mediaType, src) {
+    const graph = ensureExportAudioGraph();
+    if (!graph || !src) return null;
+    const tagName = mediaType === 'video' ? 'video' : 'audio';
+    let el = seg._exportMediaEl;
+    if (!el || el.tagName.toLowerCase() !== tagName) {
+        el = document.createElement(tagName);
+        el.preload = 'auto';
+        if (mediaType === 'video') {
+            el.playsInline = true;
+        }
+        seg._exportMediaEl = el;
+        const source = graph.context.createMediaElementSource(el);
+        source.connect(graph.destination);
+        seg._exportAudioNode = source;
+    }
+    if (el.dataset.src !== src) {
+        el.dataset.src = src;
+        el.src = src;
+        if (typeof el.load === 'function') {
+            try { el.load(); } catch { }
+        }
+    }
+    return el;
+}
+
+function syncExportMediaElement(seg, mediaType, t) {
+    const src = getEditorMediaPlaybackSrc(seg);
+    if (!src || seg.muted) return false;
+    const el = getExportMediaElement(seg, mediaType, src);
+    if (!el) return false;
+    const segTime = Math.max(0, Math.min(seg.duration || Infinity, t - seg.start));
+    if (Math.abs((el.currentTime || 0) - segTime) > 0.2) {
+        try { el.currentTime = segTime; } catch { }
+    }
+    if (editorState.exportAudioContext?.state === 'suspended') {
+        editorState.exportAudioContext.resume().catch(() => { });
+    }
+    if (editorState.playing && el.paused) {
+        el.play().catch(() => { });
+    } else if (!editorState.playing && !el.paused) {
+        el.pause();
+    }
+    return true;
+}
+
+function pauseExportAudio() {
+    editorState.tracks.forEach(track => {
+        track.segments.forEach(seg => {
+            if (seg._exportMediaEl && !seg._exportMediaEl.paused) {
+                seg._exportMediaEl.pause();
+            }
+        });
+    });
+}
+
+function cleanupExportAudio() {
+    pauseExportAudio();
+    editorState.tracks.forEach(track => {
+        track.segments.forEach(seg => {
+            if (seg._exportMediaEl) {
+                try {
+                    seg._exportMediaEl.removeAttribute('src');
+                    seg._exportMediaEl.load?.();
+                } catch { }
+                delete seg._exportMediaEl;
+            }
+            delete seg._exportAudioNode;
+        });
+    });
+    if (editorState.exportAudioContext) {
+        editorState.exportAudioContext.close().catch(() => { });
+    }
+    editorState.exportAudioContext = null;
+    editorState.exportAudioDestination = null;
+}
+
+function syncExportAudio(t, audibleVideoSegId = null) {
+    const graph = ensureExportAudioGraph();
+    if (!graph) return;
+    let hasActive = false;
+
+    for (const track of editorState.tracks) {
+        for (const seg of track.segments) {
+            const isActive = !seg.muted && t >= seg.start && t < seg.start + seg.duration;
+            if (seg.mediaType === 'audio' && isActive) {
+                hasActive = syncExportMediaElement(seg, 'audio', t) || hasActive;
+                continue;
+            }
+            if (seg.mediaType === 'video' && isActive && seg.id === audibleVideoSegId) {
+                hasActive = syncExportMediaElement(seg, 'video', t) || hasActive;
+                continue;
+            }
+            if (seg._exportMediaEl && !seg._exportMediaEl.paused) {
+                seg._exportMediaEl.pause();
+            }
+        }
+    }
+
+    if (!hasActive) pauseExportAudio();
+}
+
 function getExportCanvasSize() {
     const ratio = parseRatio(editorState.previewRatio || '16:9').value;
     const base = 1280;
@@ -4832,6 +5656,7 @@ function renderExportFrame() {
     const layers = getActiveVideoSegmentsAtTime(editorState.currentTime || 0);
     if (!layers.length) return;
     const ordered = layers.slice().sort((a, b) => b.trackIndex - a.trackIndex);
+    const textScale = getExportTextScale();
     ordered.forEach(layer => {
         const seg = layer.seg;
         const opacity = getTransitionOpacity(seg, editorState.currentTime || 0);
@@ -4840,25 +5665,27 @@ function renderExportFrame() {
             const t = getSegmentTransform(seg);
             const style = getTextStyle(seg);
             const fontFamily = resolveFontFamily(style.fontFamily);
-            const lineHeight = style.fontSize * style.lineHeight;
+            const fontSize = style.fontSize * textScale;
+            const padding = style.padding * textScale;
+            const lineHeight = fontSize * style.lineHeight;
             const lines = String(style.text || '').split('\n');
             ctx.save();
             ctx.globalAlpha = opacity;
             ctx.translate(canvas.width / 2 + (t.x || 0) * canvas.width, canvas.height / 2 + (t.y || 0) * canvas.height);
             ctx.scale(t.scale || 1, t.scale || 1);
-            ctx.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize}px ${fontFamily}`;
+            ctx.font = `${style.fontStyle} ${style.fontWeight} ${fontSize}px ${fontFamily}`;
             ctx.textAlign = style.align;
             ctx.textBaseline = 'middle';
             const widths = lines.map(line => ctx.measureText(line).width);
             const maxW = widths.length ? Math.max(...widths) : 0;
             const totalH = lines.length ? (lines.length - 1) * lineHeight : 0;
-            let bgX = -style.padding;
-            if (style.align === 'center') bgX = -maxW / 2 - style.padding;
-            if (style.align === 'right') bgX = -maxW - style.padding;
-            const bgY = -totalH / 2 - style.padding;
+            let bgX = -padding;
+            if (style.align === 'center') bgX = -maxW / 2 - padding;
+            if (style.align === 'right') bgX = -maxW - padding;
+            const bgY = -totalH / 2 - padding;
             if (style.bgColor && style.bgColor !== 'transparent') {
                 ctx.fillStyle = style.bgColor;
-                ctx.fillRect(bgX, bgY, maxW + style.padding * 2, totalH + style.padding * 2);
+                ctx.fillRect(bgX, bgY, maxW + padding * 2, totalH + padding * 2);
             }
             ctx.fillStyle = style.color;
             const startY = -totalH / 2;
@@ -4869,9 +5696,9 @@ function renderExportFrame() {
                     let lx = 0;
                     if (style.align === 'center') lx = -w / 2;
                     if (style.align === 'right') lx = -w;
-                    const ly = startY + i * lineHeight + style.fontSize * 0.38;
+                    const ly = startY + i * lineHeight + fontSize * 0.38;
                     ctx.strokeStyle = style.color;
-                    ctx.lineWidth = Math.max(1, style.fontSize / 18);
+                    ctx.lineWidth = Math.max(1, fontSize / 18);
                     ctx.beginPath();
                     ctx.moveTo(lx, ly);
                     ctx.lineTo(lx + w, ly);
@@ -4889,14 +5716,16 @@ function renderExportFrame() {
         const sh = isImage ? (el.naturalHeight || 0) : (el.videoHeight || 0);
         if (!sw || !sh) return;
         const t = getSegmentTransform(seg);
+        const transitionState = getTransitionVisualState(seg, editorState.currentTime || 0);
         const baseScale = Math.min(canvas.width / sw, canvas.height / sh);
-        const scale = baseScale * (t.scale || 1);
+        const scale = baseScale * (t.scale || 1) * (transitionState.scale || 1);
         const dw = sw * scale;
         const dh = sh * scale;
-        const dx = (canvas.width - dw) / 2 + (t.x || 0) * canvas.width;
-        const dy = (canvas.height - dh) / 2 + (t.y || 0) * canvas.height;
+        const dx = (canvas.width - dw) / 2 + ((t.x || 0) + (transitionState.x || 0)) * canvas.width;
+        const dy = (canvas.height - dh) / 2 + ((t.y || 0) + (transitionState.y || 0)) * canvas.height;
         ctx.save();
         ctx.globalAlpha = opacity;
+        ctx.filter = transitionState.filter || 'none';
         try { ctx.drawImage(el, dx, dy, dw, dh); } catch { }
         ctx.restore();
     });
@@ -4939,21 +5768,28 @@ document.addEventListener('keydown', e => {
     }
     if (e.code === 'Space') { e.preventDefault(); togglePlayback(); }
     if (e.code === 'Home') { e.preventDefault(); seekTo(0); }
-    if (e.code === 'KeyM' && editorState.selectedSegId) {
-        // Mute selected segment
+    if (e.code === 'KeyM' && getSelectedSegIds().length) {
         pushTimelineHistory();
+        const selectedIds = new Set(getSelectedSegIds());
         editorState.tracks.forEach(t => {
-            const seg = t.segments.find(s => s.id === editorState.selectedSegId);
-            if (seg) seg.muted = !seg.muted;
+            t.segments.forEach(seg => {
+                if (selectedIds.has(seg.id)) seg.muted = !seg.muted;
+            });
         });
         renderTracks();
     }
     if (e.code === 'Delete' || e.code === 'Backspace') {
-        if (editorState.selectedSegId) {
-            const track = findTrackBySegId(editorState.selectedSegId);
-            const segId = editorState.selectedSegId;
-            editorState.selectedSegId = null;
-            if (track) removeSegment(track.id, segId);
+        const selectedIds = getSelectedSegIds();
+        if (selectedIds.length) {
+            pushTimelineHistory();
+            const idSet = new Set(selectedIds);
+            editorState.tracks.forEach(track => {
+                track.segments = track.segments.filter(seg => !idSet.has(seg.id));
+            });
+            editorState.transitions = editorState.transitions.filter(t => !idSet.has(t.leftId) && !idSet.has(t.rightId));
+            clearSelectedSegments();
+            if (editorState.previewSegId && idSet.has(editorState.previewSegId)) editorState.previewSegId = null;
+            renderTimeline();
         }
     }
     if (isMod && key === 'z' && !e.shiftKey) {
@@ -4988,6 +5824,122 @@ function maybeProxySrc(src) {
     if (location.protocol === 'file:' || location.origin === 'null') return src;
     return `/api/video?url=${encodeURIComponent(src)}`;
 }
+
+function normalizeTransitionType(type) {
+    const key = String(type || '').trim().toLowerCase();
+    if (key === 'crossfade' || key === 'fade-in' || key === 'fade-out') return 'cross-dissolve';
+    if (TRANSITION_PRESET_MAP.has(key)) return key;
+    return 'cross-dissolve';
+}
+
+function getTransitionPreset(type) {
+    return TRANSITION_PRESET_MAP.get(normalizeTransitionType(type)) || TRANSITION_PRESETS[0];
+}
+
+function getTransitionParamDefs(type) {
+    return TRANSITION_PARAM_DEFS[normalizeTransitionType(type)] || [];
+}
+
+function getDefaultTransitionParams(type) {
+    const params = {};
+    getTransitionParamDefs(type).forEach(def => {
+        params[def.key] = def.default;
+    });
+    return params;
+}
+
+function normalizeTransitionParams(type, params) {
+    const next = {};
+    getTransitionParamDefs(type).forEach(def => {
+        const raw = Number(params?.[def.key]);
+        const value = Number.isFinite(raw) ? raw : def.default;
+        next[def.key] = Math.max(def.min, Math.min(def.max, value));
+    });
+    return next;
+}
+
+function normalizeTransitionData(tr) {
+    if (!tr) return null;
+    const type = normalizeTransitionType(tr.type);
+    return {
+        ...tr,
+        type,
+        params: normalizeTransitionParams(type, tr.params),
+    };
+}
+
+function getTransitionByPair(leftId, rightId) {
+    const transition = editorState.transitions.find(t => t.leftId === leftId && t.rightId === rightId);
+    if (!transition) return null;
+    const normalized = normalizeTransitionData(transition);
+    Object.assign(transition, normalized);
+    return transition;
+}
+
+function getTransitionDuration(tr) {
+    return normalizeTransitionParams(tr?.type, tr?.params).duration || TRANSITION_DUR;
+}
+
+function getTransitionVisualForPhase(type, params, side, progress) {
+    const p = clamp01(progress);
+    const isOut = side === 'out';
+    const mix = isOut ? p : (1 - p);
+    const state = {
+        opacity: isOut ? (1 - p) : p,
+        x: 0,
+        y: 0,
+        scale: 1,
+        filter: 'none',
+    };
+    const normalizedType = normalizeTransitionType(type);
+    const normalizedParams = normalizeTransitionParams(normalizedType, params);
+    if (normalizedType === 'whip-pan') {
+        const distance = normalizedParams.distance;
+        state.x = isOut ? (-distance * p) : (distance * (1 - p));
+        state.filter = `blur(${(mix * 10).toFixed(2)}px)`;
+    } else if (normalizedType === 'zoom-in-out') {
+        const zoom = normalizedParams.zoom;
+        state.scale = 1 + zoom * mix;
+    } else if (normalizedType === 'glitch-effects') {
+        const shift = normalizedParams.shift;
+        const dir = isOut ? -1 : 1;
+        state.x = dir * shift * mix;
+        state.filter = `contrast(1.25) saturate(1.35) hue-rotate(${dir * 16 * mix}deg)`;
+    } else if (normalizedType === 'speed-ramps') {
+        const boost = normalizedParams.boost;
+        state.scale = 1 + boost * mix * 0.5;
+        state.filter = `blur(${(mix * 6).toFixed(2)}px)`;
+    } else if (normalizedType === 'match-cut') {
+        const settle = normalizedParams.settle;
+        state.scale = 1 + settle * (isOut ? p * 0.5 : (1 - p));
+        state.y = isOut ? (-settle * 0.4 * p) : (settle * 0.4 * (1 - p));
+        state.opacity = isOut ? (1 - p * 0.65) : Math.min(1, 0.35 + p * 0.65);
+    }
+    return state;
+}
+
+function getTransitionVisualState(seg, t) {
+    const out = { opacity: 1, x: 0, y: 0, scale: 1, filter: 'none' };
+    if (!seg || !editorState.transitions?.length) return out;
+    for (const raw of editorState.transitions) {
+        const tr = normalizeTransitionData(raw);
+        const left = findSegById(tr.leftId);
+        const right = findSegById(tr.rightId);
+        if (!left || !right) continue;
+        const boundary = (left.start || 0) + (left.duration || 0);
+        const dur = getTransitionDuration(tr);
+        if (seg.id === left.id && t >= boundary - dur && t <= boundary) {
+            const progress = dur > 0 ? (t - (boundary - dur)) / dur : 1;
+            return getTransitionVisualForPhase(tr.type, tr.params, 'out', progress);
+        }
+        if (seg.id === right.id && t >= boundary && t <= boundary + dur) {
+            const progress = dur > 0 ? (t - boundary) / dur : 1;
+            return getTransitionVisualForPhase(tr.type, tr.params, 'in', progress);
+        }
+    }
+    return out;
+}
+
 function getExportSrc(src) {
     return maybeProxySrc(src);
 }
@@ -5009,25 +5961,8 @@ function getTransitionOpacity(seg, t) {
         }
     }
     if (!editorState.transitions || editorState.transitions.length === 0) return opacity;
-    for (const tr of editorState.transitions) {
-        const left = findSegById(tr.leftId);
-        const right = findSegById(tr.rightId);
-        if (!left || !right) continue;
-        const boundary = (left.start || 0) + (left.duration || 0);
-        const isCross = tr.type === 'crossfade';
-        if (seg.id === left.id && (tr.type === 'fade-out' || isCross)) {
-            if (t >= boundary - TRANSITION_DUR && t <= boundary) {
-                const p = (boundary - t) / TRANSITION_DUR;
-                opacity = Math.min(opacity, clamp01(p));
-            }
-        }
-        if (seg.id === right.id && (tr.type === 'fade-in' || isCross)) {
-            if (t >= boundary && t <= boundary + TRANSITION_DUR) {
-                const p = (t - boundary) / TRANSITION_DUR;
-                opacity = Math.min(opacity, clamp01(p));
-            }
-        }
-    }
+    const transitionState = getTransitionVisualState(seg, t);
+    opacity = Math.min(opacity, clamp01(transitionState.opacity ?? 1));
     return opacity;
 }
 function findSegById(id) {

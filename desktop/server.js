@@ -86,7 +86,10 @@ async function ensureFfmpeg({ allowDownload }) {
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 const ARK_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3';
 const OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/generations';
+const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const SONAUTO_BASE_URL = 'https://api.sonauto.ai/v1';
+const SONAUTO_PROXY_TIMEOUT_MS = 90000;
+const SONAUTO_PROXY_RETRIES = 3;
 
 function sendJson(res, status, payload) {
   const body = Buffer.from(JSON.stringify(payload));
@@ -203,22 +206,16 @@ function proxyOpenAiImages(req, res) {
   }
 }
 
-function proxySonauto(req, res, parsed) {
-  const tail = parsed.pathname.replace(/^\/api\/sonauto/, '');
-  const targetUrl = new URL(SONAUTO_BASE_URL + (tail.startsWith('/') ? tail : `/${tail}`));
-  parsed.searchParams.forEach((value, key) => {
-    targetUrl.searchParams.append(key, value);
-  });
-
+function proxyOpenAiResponses(req, res) {
   const headers = {
     'User-Agent': USER_AGENT,
     'Accept': req.headers.accept || 'application/json',
     'Accept-Encoding': 'identity',
+    'Content-Type': req.headers['content-type'] || 'application/json',
   };
-  if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
   if (req.headers.authorization) headers.Authorization = req.headers.authorization;
 
-  const upstream = https.request(targetUrl, { method: req.method, headers }, upstreamRes => {
+  const upstream = https.request(OPENAI_RESPONSES_URL, { method: req.method, headers }, upstreamRes => {
     res.statusCode = upstreamRes.statusCode || 502;
     const passHeaders = ['content-type'];
     passHeaders.forEach(h => {
@@ -234,6 +231,80 @@ function proxySonauto(req, res, parsed) {
   } else {
     req.pipe(upstream);
   }
+}
+
+function shouldRetrySonautoError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  return (
+    msg.includes('timed out')
+    || msg.includes('handshake')
+    || msg.includes('ssl')
+    || msg.includes('econnreset')
+    || msg.includes('socket hang up')
+    || msg.includes('temporarily unavailable')
+  );
+}
+
+function proxySonauto(req, res, parsed) {
+  const tail = parsed.pathname.replace(/^\/api\/sonauto/, '');
+  const targetUrl = new URL(SONAUTO_BASE_URL + (tail.startsWith('/') ? tail : `/${tail}`));
+  parsed.searchParams.forEach((value, key) => {
+    targetUrl.searchParams.append(key, value);
+  });
+
+  const headers = {
+    'User-Agent': USER_AGENT,
+    'Accept': req.headers.accept || 'application/json',
+    'Accept-Encoding': 'identity',
+  };
+  if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
+  if (req.headers.authorization) headers.Authorization = req.headers.authorization;
+
+  const chunks = [];
+  let body = null;
+  const attempts = { count: 0 };
+  const forward = payload => {
+    attempts.count += 1;
+    const upstream = https.request(targetUrl, { method: req.method, headers }, upstreamRes => {
+      res.statusCode = upstreamRes.statusCode || 502;
+      const passHeaders = ['content-type'];
+      passHeaders.forEach(h => {
+        if (upstreamRes.headers[h]) res.setHeader(h, upstreamRes.headers[h]);
+      });
+      upstreamRes.pipe(res);
+    });
+    upstream.setTimeout(SONAUTO_PROXY_TIMEOUT_MS, () => {
+      upstream.destroy(new Error(`Sonauto upstream timeout after ${SONAUTO_PROXY_TIMEOUT_MS}ms`));
+    });
+    upstream.on('error', err => {
+      if (!res.headersSent && attempts.count < SONAUTO_PROXY_RETRIES && shouldRetrySonautoError(err)) {
+        setTimeout(() => forward(payload), 750 * attempts.count);
+        return;
+      }
+      const message = shouldRetrySonautoError(err)
+        ? `Sonauto upstream connection timed out after ${attempts.count} attempts: ${err.message}`
+        : err.message;
+      sendJson(res, 502, { error: 'proxy_failed', message });
+    });
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      upstream.end();
+      return;
+    }
+    upstream.end(payload);
+  };
+
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    forward(null);
+    return;
+  }
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    body = Buffer.concat(chunks);
+    forward(body);
+  });
+  req.on('error', err => {
+    sendJson(res, 502, { error: 'proxy_failed', message: err.message });
+  });
 }
 
 function getMimeType(filePath) {
@@ -471,6 +542,16 @@ async function startServer() {
         return;
       }
       proxyOpenAiImages(req, res);
+      return;
+    }
+
+    if (parsed.pathname === '/api/openai/responses') {
+      if (method !== 'POST') {
+        res.statusCode = 405;
+        res.end('Method Not Allowed');
+        return;
+      }
+      proxyOpenAiResponses(req, res);
       return;
     }
 

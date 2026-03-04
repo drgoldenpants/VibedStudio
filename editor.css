@@ -707,15 +707,15 @@
 
 .preview-stage.effect-glitch .preview-layers {
     animation: glitchShift 0.18s steps(2) infinite;
-    filter: contrast(1.2) saturate(1.15);
+    filter: contrast(var(--fx-glitch-contrast, 1.2)) saturate(1.15);
 }
 
 .preview-stage.effect-vhs .preview-layers {
-    filter: saturate(1.35) contrast(1.1);
+    filter: saturate(var(--fx-vhs-saturation, 1.35)) contrast(1.1);
 }
 
 .preview-stage.effect-vhs::after {
-    opacity: 0.35;
+    opacity: var(--fx-vhs-scanlines, 0.35);
     background:
         repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.08) 0px, rgba(255, 255, 255, 0.02) 2px, rgba(0, 0, 0, 0.08) 3px);
     mix-blend-mode: overlay;
@@ -725,23 +725,116 @@
     animation: blurIn 0.9s ease-in-out infinite;
 }
 
+.preview-stage.effect-aesthetic-weekend .preview-layers {
+    filter: saturate(0.92) contrast(1.04) brightness(1.03) sepia(var(--fx-aw-warmth, 0.14)) hue-rotate(-6deg);
+}
+
+.preview-stage.effect-aesthetic-weekend::after {
+    opacity: var(--fx-aw-wash, 0.28);
+    background: linear-gradient(180deg, rgba(255, 210, 228, 0.16), rgba(255, 186, 136, 0.12) 52%, rgba(121, 167, 255, 0.18));
+    mix-blend-mode: screen;
+}
+
+.preview-stage.effect-retro-glow .preview-layers {
+    filter: saturate(1.12) contrast(1.08) brightness(1.02) sepia(var(--fx-rg-sepia, 0.18));
+}
+
+.preview-stage.effect-retro-glow::after {
+    opacity: var(--fx-rg-glow, 0.34);
+    background:
+        radial-gradient(circle at 50% 48%, rgba(255, 166, 102, 0.3), transparent 44%),
+        radial-gradient(circle at 50% 50%, rgba(255, 90, 90, 0.12), transparent 66%);
+    mix-blend-mode: screen;
+}
+
+.preview-stage.effect-cozy .preview-layers {
+    filter: sepia(var(--fx-cozy-warmth, 0.24)) saturate(0.95) contrast(1.02) brightness(1.01) hue-rotate(-8deg);
+}
+
+.preview-stage.effect-cozy::after {
+    opacity: var(--fx-cozy-softness, 0.22);
+    background: linear-gradient(180deg, rgba(255, 220, 170, 0.16), rgba(92, 54, 24, 0.1));
+    mix-blend-mode: soft-light;
+}
+
+.preview-stage.effect-brew .preview-layers {
+    filter: sepia(var(--fx-brew-roast, 0.44)) saturate(0.82) contrast(1.08) brightness(0.96) hue-rotate(-12deg);
+}
+
+.preview-stage.effect-brew::after {
+    opacity: var(--fx-brew-shade, 0.24);
+    background: linear-gradient(180deg, rgba(73, 39, 20, 0.08), rgba(33, 16, 8, 0.26));
+    mix-blend-mode: multiply;
+}
+
+.preview-stage.effect-tonal .preview-layers {
+    filter: grayscale(var(--fx-tonal-mono, 0.85)) contrast(var(--fx-tonal-contrast, 1.14)) brightness(1.03);
+}
+
+.preview-stage.effect-beach .preview-layers {
+    filter: saturate(var(--fx-beach-vibrance, 1.24)) brightness(1.08) contrast(1.02) hue-rotate(-4deg);
+}
+
+.preview-stage.effect-beach::after {
+    opacity: var(--fx-beach-sunlight, 0.24);
+    background: linear-gradient(180deg, rgba(255, 239, 185, 0.18), rgba(79, 208, 255, 0.16));
+    mix-blend-mode: screen;
+}
+
+.preview-stage.effect-color-bomb .preview-layers {
+    filter: saturate(var(--fx-cb-saturation, 1.75)) contrast(1.18) brightness(1.02);
+}
+
+.preview-stage.effect-color-bomb::after {
+    opacity: var(--fx-cb-burst, 0.2);
+    background:
+        radial-gradient(circle at 18% 26%, rgba(255, 0, 106, 0.18), transparent 24%),
+        radial-gradient(circle at 78% 22%, rgba(0, 227, 255, 0.18), transparent 22%),
+        radial-gradient(circle at 54% 78%, rgba(255, 221, 0, 0.16), transparent 28%);
+    mix-blend-mode: screen;
+}
+
+.preview-stage.effect-vintage-film .preview-layers {
+    filter: sepia(var(--fx-vf-age, 0.36)) saturate(0.88) contrast(1.06) brightness(0.98);
+}
+
+.preview-stage.effect-vintage-film::after {
+    opacity: var(--fx-vf-grain, 0.3);
+    background:
+        repeating-linear-gradient(0deg, rgba(255, 248, 215, 0.06) 0px, rgba(33, 24, 8, 0.06) 2px, rgba(0, 0, 0, 0.02) 4px),
+        radial-gradient(circle at 50% 50%, transparent 54%, rgba(46, 29, 8, 0.18) 100%);
+    mix-blend-mode: multiply;
+}
+
+.preview-stage.effect-nd3-angel .preview-layers {
+    filter: saturate(0.9) brightness(1.12) contrast(0.94) blur(var(--fx-angel-softness, 0.3px));
+}
+
+.preview-stage.effect-nd3-angel::after {
+    opacity: var(--fx-angel-halo, 0.28);
+    background:
+        radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.28), transparent 34%),
+        linear-gradient(180deg, rgba(206, 233, 255, 0.16), rgba(255, 222, 240, 0.12));
+    mix-blend-mode: screen;
+}
+
 @keyframes zoomPunch {
     0% { transform: translateZ(0) scale(1); }
-    35% { transform: translateZ(0) scale(1.06); }
+    35% { transform: translateZ(0) scale(var(--fx-zoom-scale, 1.06)); }
     100% { transform: translateZ(0) scale(1); }
 }
 
 @keyframes glitchShift {
     0% { transform: translate(0, 0); }
-    25% { transform: translate(1px, -1px); }
-    50% { transform: translate(-1px, 1px); }
-    75% { transform: translate(1px, 1px); }
+    25% { transform: translate(var(--fx-glitch-shift, 1px), calc(var(--fx-glitch-shift, 1px) * -1)); }
+    50% { transform: translate(calc(var(--fx-glitch-shift, 1px) * -1), var(--fx-glitch-shift, 1px)); }
+    75% { transform: translate(var(--fx-glitch-shift, 1px), var(--fx-glitch-shift, 1px)); }
     100% { transform: translate(0, 0); }
 }
 
 @keyframes blurIn {
     0% { filter: blur(0px); }
-    45% { filter: blur(4px); }
+    45% { filter: blur(var(--fx-blur-max, 4px)); }
     100% { filter: blur(0px); }
 }
 
@@ -821,6 +914,15 @@
     user-select: none;
 }
 
+.preview-layer.selected {
+    outline: 2px solid rgba(255, 255, 255, 0.92);
+    outline-offset: -2px;
+    box-shadow:
+        0 0 0 2px rgba(15, 23, 42, 0.7),
+        0 0 22px rgba(56, 189, 248, 0.45),
+        0 0 38px rgba(124, 58, 237, 0.28);
+}
+
 .preview-layer-text {
     inset: auto;
     width: auto;
@@ -876,6 +978,7 @@
 .preview-layer-text.selected {
     outline: 1px dashed rgba(255, 255, 255, 0.6);
     outline-offset: 6px;
+    box-shadow: none;
 }
 
 .preview-scale-handle {
@@ -1331,6 +1434,10 @@
     background: rgba(255, 255, 255, 0.01);
 }
 
+.tl-track-row.transition-hotspot {
+    cursor: pointer;
+}
+
 .tl-track-row.dragover {
     background: rgba(124, 58, 237, 0.06);
     border-color: rgba(124, 58, 237, 0.3);
@@ -1509,25 +1616,46 @@
 }
 
 /* Transitions */
+.tl-transition-hit {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 36px;
+    transform: translateX(-50%);
+    z-index: 8;
+    cursor: pointer;
+}
+
 .tl-transition {
     position: absolute;
-    top: 16px;
-    width: 10px;
-    height: 10px;
+    top: 13px;
+    left: 50%;
+    width: 16px;
+    height: 16px;
     transform: translateX(-50%) rotate(45deg);
-    border-radius: 2px;
+    border-radius: 3px;
     border: 1px solid rgba(255, 255, 255, 0.25);
-    z-index: 7;
+    z-index: 1;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    cursor: pointer;
 }
-.tl-transition.fade-in {
-    background: linear-gradient(135deg, rgba(34, 197, 94, 0.9), rgba(16, 185, 129, 0.8));
-}
-.tl-transition.fade-out {
-    background: linear-gradient(135deg, rgba(239, 68, 68, 0.9), rgba(248, 113, 113, 0.8));
-}
-.tl-transition.crossfade {
+.tl-transition.cross-dissolve {
     background: linear-gradient(135deg, rgba(124, 58, 237, 0.95), rgba(59, 130, 246, 0.9));
+}
+.tl-transition.whip-pan {
+    background: linear-gradient(135deg, rgba(249, 115, 22, 0.95), rgba(239, 68, 68, 0.9));
+}
+.tl-transition.zoom-in-out {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.95), rgba(45, 212, 191, 0.9));
+}
+.tl-transition.glitch-effects {
+    background: linear-gradient(135deg, rgba(236, 72, 153, 0.95), rgba(168, 85, 247, 0.9));
+}
+.tl-transition.speed-ramps {
+    background: linear-gradient(135deg, rgba(234, 179, 8, 0.95), rgba(249, 115, 22, 0.9));
+}
+.tl-transition.match-cut {
+    background: linear-gradient(135deg, rgba(148, 163, 184, 0.95), rgba(226, 232, 240, 0.9));
 }
 
 /* Transition context menu */
@@ -1560,6 +1688,25 @@
 }
 .tl-context-row > div {
     flex: 1;
+}
+.tl-context-effect-params {
+    margin-top: 4px;
+}
+.tl-context-range-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 6px 4px;
+}
+.tl-context-range-row input[type="range"] {
+    flex: 1;
+    padding: 0;
+}
+.tl-context-range-value {
+    min-width: 34px;
+    text-align: right;
+    font-size: 10px;
+    color: var(--text-2);
 }
 .tl-context-menu input,
 .tl-context-menu select,
@@ -1657,15 +1804,15 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    left: -6px;
-    width: 14px;
+    left: -3px;
+    width: 8px;
 }
 
 .tl-playhead::before {
     content: '';
     position: absolute;
     top: 0;
-    left: -5px;
+    left: -4px;
     border: 6px solid transparent;
     border-top-color: var(--red);
     border-left: 6px solid var(--red);

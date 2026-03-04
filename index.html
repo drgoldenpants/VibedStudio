@@ -5,8 +5,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Seedance Vibed Studio</title>
-    <link rel="icon" type="image/svg+xml"
-        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 120'%3E%3Cpolygon points='12,14 46,4 46,106 12,116' fill='%232f5aa8'/%3E%3Cpolygon points='58,38 86,28 86,94 58,104' fill='%234a8cff'/%3E%3Cpolygon points='102,30 126,22 126,90 102,98' fill='%2318b6c2'/%3E%3Cpolygon points='134,12 158,4 158,106 134,116' fill='%237fe9db'/%3E%3C/svg%3E" />
+    <link rel="icon" type="image/svg+xml" href="icon.svg" />
     <meta name="description" content="Generate and edit AI videos using BytePlus VibedStudio." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -28,15 +27,8 @@
         <!-- Header -->
         <header class="header">
             <div class="logo">
-                <div class="logo-icon">
-                    <svg viewBox="0 0 160 120" aria-label="Logo" role="img">
-                        <polygon points="12,14 46,4 46,106 12,116" fill="#2f5aa8" />
-                        <polygon points="58,38 86,28 86,94 58,104" fill="#4a8cff" />
-                        <polygon points="102,30 126,22 126,90 102,98" fill="#18b6c2" />
-                        <polygon points="134,12 158,4 158,106 134,116" fill="#7fe9db" />
-                    </svg>
-                </div>
-                <span class="logo-text">SEEDANCE VIBED <span class="logo-sub">Studio</span></span>
+                <div class="logo-icon" aria-hidden="true"></div>
+                <span class="logo-text">VIBED <span class="logo-sub">Film Studio</span></span>
             </div>
             <nav class="app-tabs">
                 <button class="app-tab" data-tab="images">
@@ -118,6 +110,8 @@
                                     </svg>
                                 </button>
                             </div>
+                            <p class="hak-hint" data-hint-for="api-key">Get your key from <a href="https://console.byteplus.com/ark"
+                                    target="_blank" rel="noopener">BytePlus Console</a></p>
                             <label class="hak-label" for="openai-api-key">OpenAI API Key (Images)</label>
                             <div class="hak-input-row">
                                 <input type="password" id="openai-api-key" class="hak-input"
@@ -132,6 +126,8 @@
                                     </svg>
                                 </button>
                             </div>
+                            <p class="hak-hint" data-hint-for="openai-api-key">Get your key from <a href="https://platform.openai.com/api-keys"
+                                    target="_blank" rel="noopener">OpenAI API Keys</a></p>
                             <label class="hak-label" for="sonauto-api-key">Sonauto API Key (Audio)</label>
                             <div class="hak-input-row">
                                 <input type="password" id="sonauto-api-key" class="hak-input"
@@ -146,8 +142,8 @@
                                     </svg>
                                 </button>
                             </div>
-                            <p class="hak-hint">Get your key from <a href="https://console.byteplus.com/ark"
-                                    target="_blank" rel="noopener">BytePlus Console</a></p>
+                            <p class="hak-hint" data-hint-for="sonauto-api-key">Get your key from <a href="https://sonauto.ai/developers"
+                                    target="_blank" rel="noopener">Sonauto</a></p>
                         </div>
                     </div>
                 </div>
@@ -741,6 +737,16 @@
 
                             <div class="toolbar-panel hidden" data-toolbar-panel="effects">
                                 <div class="editor-toolbar-title">Effects</div>
+                                <button class="tool-btn" id="tool-add-effect-track">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <path d="M4 12H20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                                    <circle cx="8" cy="12" r="3" stroke="currentColor" stroke-width="1.6" />
+                                    <circle cx="16" cy="12" r="3" stroke="currentColor" stroke-width="1.6" />
+                                    <path d="M19 5V9M17 7H21" stroke="currentColor" stroke-width="1.6"
+                                        stroke-linecap="round" />
+                                </svg>
+                                Add Effect Track
+                                </button>
                                 <div class="media-list effect-items" id="effect-items">
                                     <div class="media-empty-hint">Loading effects…</div>
                                 </div>
@@ -748,6 +754,15 @@
 
                             <div class="toolbar-panel hidden" data-toolbar-panel="text">
                                 <div class="editor-toolbar-title">Text</div>
+                                <button class="tool-btn" id="tool-add-text-track">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <path d="M4 6H20M12 6V18M8 18H16" stroke="currentColor" stroke-width="1.6"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                    <path d="M19 11V17M16 14H22" stroke="currentColor" stroke-width="1.6"
+                                        stroke-linecap="round" />
+                                </svg>
+                                Add Text Track
+                                </button>
                                 <div class="media-list text-items" id="text-items">
                                     <div class="media-empty-hint">Add a text overlay to get started</div>
                                 </div>

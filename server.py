@@ -10,9 +10,12 @@ PORT = 8787
 IMAGE_PROXY_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3/images/generations'
 ARK_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3'
 OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/generations'
+OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses'
 SONAUTO_BASE_URL = 'https://api.sonauto.ai/v1'
 PROJECT_DIR = os.path.join(os.getcwd(), 'projects')
 IMAGE_HISTORY_LIMIT = 200
+SONAUTO_PROXY_TIMEOUT = 30
+SONAUTO_PROXY_RETRIES = 3
 
 def ensure_project_dir():
     os.makedirs(PROJECT_DIR, exist_ok=True)
@@ -53,6 +56,31 @@ def save_image_history(api_key, provider, images):
     payload = {'images': images[-IMAGE_HISTORY_LIMIT:]}
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(payload, f)
+
+def should_retry_sonauto_error(err):
+    msg = str(err or '').lower()
+    return (
+        isinstance(err, TimeoutError)
+        or 'timed out' in msg
+        or 'handshake operation timed out' in msg
+        or 'ssl' in msg
+        or 'connection reset' in msg
+        or 'temporarily unavailable' in msg
+    )
+
+def open_sonauto_request(req):
+    last_err = None
+    for attempt in range(SONAUTO_PROXY_RETRIES):
+        try:
+            return urllib.request.urlopen(req, timeout=SONAUTO_PROXY_TIMEOUT)
+        except urllib.error.HTTPError:
+            raise
+        except Exception as e:
+            last_err = e
+            if attempt >= SONAUTO_PROXY_RETRIES - 1 or not should_retry_sonauto_error(e):
+                raise
+            time.sleep(0.75 * (attempt + 1))
+    raise last_err
 
 def extract_image_urls(payload):
     urls = []
@@ -180,6 +208,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == '/api/openai/images':
             self.handle_openai_images()
             return
+        if self.path == '/api/openai/responses':
+            self.handle_openai_responses()
+            return
         if self.path.startswith('/api/sonauto/'):
             self.handle_sonauto_proxy('POST')
             return
@@ -293,6 +324,46 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 'message': str(e),
             }).encode('utf-8'))
 
+    def handle_openai_responses(self):
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length)
+
+        req = urllib.request.Request(OPENAI_RESPONSES_URL, data=body, method='POST')
+        content_type = self.headers.get('Content-Type') or 'application/json'
+        req.add_header('Content-Type', content_type)
+        auth = self.headers.get('Authorization')
+        if auth:
+            req.add_header('Authorization', auth)
+        accept = self.headers.get('Accept')
+        if accept:
+            req.add_header('Accept', accept)
+
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+                self.send_response(resp.status)
+                ct = resp.headers.get('Content-Type')
+                if ct:
+                    self.send_header('Content-Type', ct)
+                self.end_headers()
+                self.wfile.write(data)
+        except urllib.error.HTTPError as e:
+            data = e.read()
+            self.send_response(e.code)
+            ct = e.headers.get('Content-Type')
+            if ct:
+                self.send_header('Content-Type', ct)
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_response(502)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': 'Bad gateway',
+                'message': str(e),
+            }).encode('utf-8'))
+
     def handle_ark_proxy(self, method):
         target = self.path[len('/api/ark'):]
         if not target.startswith('/'):
@@ -362,7 +433,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             req.add_header('Accept', accept)
 
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with open_sonauto_request(req) as resp:
                 data = resp.read()
                 self.send_response(resp.status)
                 ct = resp.headers.get('Content-Type')
@@ -379,12 +450,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
         except Exception as e:
+            msg = str(e)
+            if should_retry_sonauto_error(e):
+                msg = f'Sonauto upstream connection timed out after {SONAUTO_PROXY_RETRIES} attempts: {msg}'
             self.send_response(502)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({
                 'error': 'Bad gateway',
-                'message': str(e),
+                'message': msg,
             }).encode('utf-8'))
 
     def handle_export(self):

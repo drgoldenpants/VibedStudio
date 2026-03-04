@@ -5,6 +5,8 @@
 
 const IMAGE_API_BASE = '/api/image';
 const OPENAI_IMAGE_API_BASE = '/api/openai/images';
+const OPENAI_RESPONSES_API_BASE = '/api/openai/responses';
+const OPENAI_RESPONSES_MODEL = 'gpt-4.1';
 
 const IMAGE_MODELS = [
     {
@@ -40,7 +42,15 @@ const IMAGE_MODELS = [
         supportsReference: true,
         desc: 'Text, single-image, multi-image',
     },
-    { id: 'gpt-image-1.5', name: 'GPT Image 1.5', badge: 'OPENAI', sizes: ['1024x1024', '1024x1536', '1536x1024'], provider: 'openai' },
+    {
+        id: 'gpt-image-1.5',
+        name: 'GPT Image 1.5',
+        badge: 'OPENAI',
+        sizes: ['1024x1024', '1024x1536', '1536x1024'],
+        provider: 'openai',
+        supportsReference: true,
+        desc: 'Text, multi-image reference',
+    },
 ];
 
 const imgState = {
@@ -516,7 +526,7 @@ function updateReferenceControls() {
     const hint = document.getElementById('img-reference-hint');
     if (deck) deck.classList.toggle('disabled', !supports);
     if (addBtn) addBtn.classList.toggle('disabled', !supports);
-    if (hint) hint.textContent = supports ? 'Up to 14 images' : 'References available for Seedream models';
+    if (hint) hint.textContent = supports ? 'Up to 14 images' : 'References unavailable for this model';
 }
 
 function updateOutputLabel() {
@@ -644,18 +654,27 @@ function buildImgPayload({ preview = false } = {}) {
     const prompt = document.getElementById('img-prompt')?.value.trim();
     const model = IMAGE_MODELS.find(m => m.id === imgState.model);
     const outputCount = clampOutputCount(imgState.outputCount || 1);
-    const supportsRefs = model?.supportsReference && model?.provider === 'byteplus';
+    const supportsRefs = !!model?.supportsReference;
     const refImages = supportsRefs ? imgState.referenceImages : [];
     const refPayload = preview
         ? refImages.map((_, idx) => `(reference image ${idx + 1} base64...)`)
         : refImages.map(img => img.dataUrl);
     if (model?.provider === 'openai') {
+        if (shouldUseOpenAiResponses({ provider: 'openai', referenceImages: refImages })) {
+            return buildOpenAiResponsesPayload({
+                prompt: prompt || '(your prompt here)',
+                size: imgState.size || '1024x1024',
+                format: imgState.format || 'png',
+                referenceImages: refPayload,
+            });
+        }
         return {
             model: imgState.model,
             prompt: prompt || '(your prompt here)',
             size: imgState.size || '1024x1024',
             n: outputCount,
             output_format: imgState.format || 'png',
+            moderation: 'low',
         };
     }
     const payload = {
@@ -678,12 +697,21 @@ function buildImgPayload({ preview = false } = {}) {
 
 function buildImgPayloadForJob(job) {
     if (job.provider === 'openai') {
+        if (shouldUseOpenAiResponses(job)) {
+            return buildOpenAiResponsesPayload({
+                prompt: job.prompt || '(your prompt here)',
+                size: job.size || '1024x1024',
+                format: job.format || 'png',
+                referenceImages: (job.referenceImages || []).map(img => img.dataUrl || img),
+            });
+        }
         return {
             model: job.model,
             prompt: job.prompt || '(your prompt here)',
             size: job.size || '1024x1024',
             n: job.outputCount || 1,
             output_format: job.format || 'png',
+            moderation: 'low',
         };
     }
     const payload = {
@@ -704,6 +732,36 @@ function buildImgPayloadForJob(job) {
         payload.optimize_prompt_options = { mode: 'fast' };
     }
     return payload;
+}
+
+function shouldUseOpenAiResponses(job) {
+    return job?.provider === 'openai' && Array.isArray(job.referenceImages) && job.referenceImages.length > 0;
+}
+
+function buildOpenAiResponsesPayload({ prompt, size, format, referenceImages = [] }) {
+    return {
+        model: OPENAI_RESPONSES_MODEL,
+        input: [
+            {
+                role: 'user',
+                content: [
+                    { type: 'input_text', text: prompt || '(your prompt here)' },
+                    ...referenceImages.map(imageUrl => ({
+                        type: 'input_image',
+                        image_url: imageUrl,
+                    })),
+                ],
+            },
+        ],
+        tools: [
+            {
+                type: 'image_generation',
+                size: size || '1024x1024',
+                output_format: format || 'png',
+                moderation: 'low',
+            },
+        ],
+    };
 }
 
 function updateImgJsonPreview() {
@@ -851,11 +909,6 @@ async function handleImageGenerate() {
         document.getElementById('img-prompt')?.focus();
         return;
     }
-    if (provider === 'openai' && imgState.referenceImages.length) {
-        showError('Reference images are supported only on Seedream models. Switch to Seedream or remove references.');
-        return;
-    }
-
     const job = {
         id: `img-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
         prompt,
@@ -866,7 +919,7 @@ async function handleImageGenerate() {
         optimizeMode: imgState.optimizeMode,
         provider,
         apiKey,
-        referenceImages: provider === 'openai' ? [] : imgState.referenceImages.slice(0, IMG_MAX_REFERENCE_IMAGES),
+        referenceImages: model?.supportsReference ? imgState.referenceImages.slice(0, IMG_MAX_REFERENCE_IMAGES) : [],
         supportsFormat: model?.provider === 'openai' || model?.supportsFormat,
         supportsOptimize: model?.supportsOptimize,
         startedAt: Date.now(),
@@ -917,6 +970,11 @@ function updateImageQueueStatus() {
 }
 
 async function runImageJob(job) {
+    if (shouldUseOpenAiResponses(job)) {
+        await runOpenAiResponsesJob(job);
+        return;
+    }
+
     const body = buildImgPayloadForJob(job);
 
     const res = await fetch(job.provider === 'openai' ? OPENAI_IMAGE_API_BASE : IMAGE_API_BASE, {
@@ -929,11 +987,17 @@ async function runImageJob(job) {
     });
 
     const headers = Object.fromEntries(res.headers.entries());
+    const contentType = res.headers.get('content-type') || '';
+    const rawText = await res.text();
     let payload = null;
     try {
-        payload = await res.json();
+        payload = rawText ? JSON.parse(rawText) : null;
     } catch {
-        payload = { message: 'Non-JSON response body' };
+        payload = {
+            message: 'Non-JSON response body',
+            contentType: contentType || null,
+            rawBody: rawText ? rawText.slice(0, 4000) : '',
+        };
     }
 
     if (!res.ok) {
@@ -944,7 +1008,13 @@ async function runImageJob(job) {
             headers,
             body: payload,
         });
-        throw new Error(payload?.error?.message || payload?.message || `HTTP ${res.status}`);
+        throw new Error(
+            payload?.error?.message
+            || payload?.error
+            || payload?.message
+            || payload?.rawBody
+            || `HTTP ${res.status}`
+        );
     }
 
     setImgResponsePreview({
@@ -1011,6 +1081,122 @@ async function runImageJob(job) {
     }
 
     showToast(`Image generated! ✨ (${records.length} output${records.length > 1 ? 's' : ''})`, 'success', '🖼️');
+}
+
+async function runOpenAiResponsesJob(job) {
+    const responses = [];
+    const records = [];
+    const totalOutputs = Math.max(1, job.outputCount || 1);
+
+    for (let attempt = 0; attempt < totalOutputs; attempt++) {
+        const body = buildImgPayloadForJob(job);
+        const res = await fetch(OPENAI_RESPONSES_API_BASE, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${job.apiKey}`,
+            },
+            body: JSON.stringify(body),
+        });
+
+        const headers = Object.fromEntries(res.headers.entries());
+        const contentType = res.headers.get('content-type') || '';
+        const rawText = await res.text();
+        let payload = null;
+        try {
+            payload = rawText ? JSON.parse(rawText) : null;
+        } catch {
+            payload = {
+                message: 'Non-JSON response body',
+                contentType: contentType || null,
+                rawBody: rawText ? rawText.slice(0, 4000) : '',
+            };
+        }
+
+        responses.push({
+            ok: res.ok,
+            status: res.status,
+            statusText: res.statusText,
+            headers,
+            body: payload,
+        });
+
+        if (!res.ok) {
+            setImgResponsePreview({ ok: false, mode: 'responses', responses });
+            throw new Error(
+                payload?.error?.message
+                || payload?.error
+                || payload?.message
+                || payload?.rawBody
+                || `HTTP ${res.status}`
+            );
+        }
+
+        const imageUrls = extractOpenAiResponseImages(payload, job.format);
+        if (!imageUrls.length) {
+            setImgResponsePreview({ ok: false, mode: 'responses', responses });
+            throw new Error('No image returned from OpenAI Responses API');
+        }
+
+        imageUrls.forEach((imageUrl, idx) => {
+            const blob = dataUrlToBlobSafe(imageUrl);
+            records.push({
+                id: records.length === 0 ? job.id : `img-${Date.now()}-${attempt}-${idx}`,
+                url: imageUrl,
+                blob: blob || null,
+                blobUrl: blob ? URL.createObjectURL(blob) : imageUrl,
+                prompt: job.prompt,
+                model: job.model,
+                size: job.size,
+                format: job.format,
+                provider: job.provider,
+                timestamp: new Date().toISOString(),
+            });
+        });
+    }
+
+    setImgResponsePreview({ ok: true, mode: 'responses', responses });
+
+    if (!records.length) throw new Error('No image returned from OpenAI Responses API');
+
+    for (const record of records) {
+        if (window.db) await dbPut('images', record);
+    }
+
+    finishImageCard(job.id, records[0]);
+    records.slice(1).forEach(record => renderSavedImageCard(record));
+    imgState.count += records.length;
+    document.getElementById('img-count-badge').textContent = imgState.count;
+    if (typeof window.addGeneratedImageToEditor === 'function') {
+        records.forEach(record => window.addGeneratedImageToEditor(record));
+    }
+
+    showToast(`Image generated! ✨ (${records.length} output${records.length > 1 ? 's' : ''})`, 'success', '🖼️');
+}
+
+function extractOpenAiResponseImages(payload, format = 'png') {
+    const output = Array.isArray(payload?.output) ? payload.output : [];
+    return output
+        .filter(item => item?.type === 'image_generation_call' && typeof item?.result === 'string' && item.result)
+        .map(item => `data:image/${format || 'png'};base64,${item.result}`);
+}
+
+function dataUrlToBlobSafe(dataUrl) {
+    try {
+        if (typeof dataUrlToBlob === 'function') return dataUrlToBlob(dataUrl);
+    } catch {
+    }
+    try {
+        const [meta, b64data] = String(dataUrl || '').split(',');
+        if (!meta || !b64data) return null;
+        const mime = meta.match(/data:(.*?);base64/)?.[1] || 'image/png';
+        const bin = atob(b64data);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        return new Blob([arr], { type: mime });
+    } catch {
+        return null;
+    }
 }
 
 // ── Load from IndexedDB ────────────────────────────────────────

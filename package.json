@@ -26,6 +26,7 @@
     "asarUnpack": [],
     "files": [
       "desktop/**",
+      "icon.svg",
       "index.html",
       "app.js",
       "style.css",

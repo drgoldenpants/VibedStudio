@@ -1193,6 +1193,7 @@ apiKeyInput.addEventListener('input', () => {
   state.apiKey = apiKeyInput.value.trim();
   localStorage.setItem('vibedstudio_api_key', state.apiKey);
   updateHakDot();
+  updateApiKeyHints();
   if (state.apiKey) scheduleRemoteSync();
   if (state.apiKey) scheduleImageHistorySync('byteplus');
 });
@@ -1201,6 +1202,7 @@ if (openAiKeyInput) {
   openAiKeyInput.addEventListener('input', () => {
     state.openaiApiKey = openAiKeyInput.value.trim();
     localStorage.setItem('vibedstudio_openai_api_key', state.openaiApiKey);
+    updateApiKeyHints();
     if (state.openaiApiKey) scheduleImageHistorySync('openai');
   });
 }
@@ -1209,6 +1211,17 @@ if (sonautoKeyInput) {
   sonautoKeyInput.addEventListener('input', () => {
     state.sonautoApiKey = sonautoKeyInput.value.trim();
     localStorage.setItem('vibedstudio_sonauto_api_key', state.sonautoApiKey);
+    updateApiKeyHints();
+  });
+}
+
+function updateApiKeyHints() {
+  [
+    ['api-key', state.apiKey],
+    ['openai-api-key', state.openaiApiKey],
+    ['sonauto-api-key', state.sonautoApiKey],
+  ].forEach(([inputId, value]) => {
+    document.querySelector(`[data-hint-for="${inputId}"]`)?.classList.toggle('hidden', !!String(value || '').trim());
   });
 }
 
@@ -1219,6 +1232,7 @@ function updateHakDot() {
   dot.style.opacity = state.apiKey ? '1' : '0.5';
   if (hakWidget) hakWidget.classList.toggle('needs-key', !state.apiKey);
   if (hakTooltip) hakTooltip.classList.toggle('hidden', !!state.apiKey);
+  updateApiKeyHints();
 }
 
 // Widget open/close
@@ -1270,52 +1284,27 @@ if (toggleSonautoKeyBtn && sonautoKeyInput) {
   });
 }
 
-if (toggleControlsBtn) {
-  toggleControlsBtn.addEventListener('click', () => {
-    const layout = toggleControlsBtn.closest('.main-layout');
-    if (!layout) return;
-    const hidden = layout.classList.toggle('controls-hidden');
-    toggleControlsBtn.title = hidden ? 'Show controls' : 'Hide controls';
-    toggleControlsBtn.setAttribute('aria-label', toggleControlsBtn.title);
-  });
-}
-if (controlsTab) {
-  controlsTab.addEventListener('click', () => {
-    const layout = controlsTab.closest('.main-layout');
-    if (!layout) return;
-    layout.classList.remove('controls-hidden');
-    if (toggleControlsBtn) {
-      toggleControlsBtn.title = 'Hide controls';
-      toggleControlsBtn.setAttribute('aria-label', toggleControlsBtn.title);
-    }
-  });
-}
-
-document.querySelectorAll('.control-hide-btn:not(#toggle-controls)').forEach(btn => {
-  if (btn.dataset.bound === '1') return;
-  btn.dataset.bound = '1';
-  btn.addEventListener('click', () => {
-    const layout = btn.closest('.main-layout');
-    if (!layout) return;
-    const hidden = layout.classList.toggle('controls-hidden');
-    btn.title = hidden ? 'Show controls' : 'Hide controls';
-    btn.setAttribute('aria-label', btn.title);
-  });
-});
-
-document.querySelectorAll('.controls-tab:not(#controls-tab)').forEach(tab => {
-  if (tab.dataset.bound === '1') return;
-  tab.dataset.bound = '1';
-  tab.addEventListener('click', () => {
-    const layout = tab.closest('.main-layout');
-    if (!layout) return;
-    layout.classList.remove('controls-hidden');
-    const hideBtn = layout.querySelector('.control-hide-btn');
-    if (hideBtn) {
-      hideBtn.title = 'Hide controls';
-      hideBtn.setAttribute('aria-label', 'Hide controls');
-    }
-  });
+document.querySelectorAll('.main-layout').forEach(layout => {
+  if (layout.dataset.controlsBound === '1') return;
+  layout.dataset.controlsBound = '1';
+  const hideBtn = layout.querySelector('.control-hide-btn');
+  const showBtn = layout.querySelector('.controls-tab');
+  if (hideBtn) {
+    hideBtn.addEventListener('click', () => {
+      const hidden = layout.classList.toggle('controls-hidden');
+      hideBtn.title = hidden ? 'Show controls' : 'Hide controls';
+      hideBtn.setAttribute('aria-label', hideBtn.title);
+    });
+  }
+  if (showBtn) {
+    showBtn.addEventListener('click', () => {
+      layout.classList.remove('controls-hidden');
+      if (hideBtn) {
+        hideBtn.title = 'Hide controls';
+        hideBtn.setAttribute('aria-label', 'Hide controls');
+      }
+    });
+  }
 });
 
 function updatePromptChips() {
@@ -2229,6 +2218,7 @@ function setImageFromDataUrl(dataUrl) {
   state.imageFile = null;
   if (dropContent) dropContent.classList.add('hidden');
   if (removeImgBtn) removeImgBtn.classList.remove('hidden');
+  syncModeFromMedia();
 }
 
 function setFrameFromDataUrl(dataUrl, which) {
@@ -2253,6 +2243,7 @@ function setFrameFromDataUrl(dataUrl, which) {
     }
     if (lastFrameRemove) lastFrameRemove.classList.remove('hidden');
   }
+  syncModeFromMedia();
 }
 
 function setReferencePromptFromText(text) {
@@ -2818,6 +2809,9 @@ function pollJob(taskId, { initialElapsed = 0 } = {}) {
         saveVideoJob(job || buildFallbackJob(taskId, 'succeeded', videoUrl || null), null);
         // Auto-cache the video blob for faster editing.
         if (job?.id) ensureVideoCached(job.id, { silent: true });
+        if (job && typeof window.addGeneratedVideoToEditor === 'function') {
+          window.addGeneratedVideoToEditor(job);
+        }
         window.syncMediaLibrary?.();
         decrementActive();
         showToast('✅ Video ready!', 'success', '🎉');
@@ -3449,6 +3443,9 @@ async function ensureThumbnail(job, taskId, videoUrl) {
               }
             }
             window.syncMediaLibrary?.();
+            if (typeof window.addGeneratedVideoToEditor === 'function') {
+              window.addGeneratedVideoToEditor(job);
+            }
             return;
           }
         }
@@ -3488,6 +3485,9 @@ async function ensureThumbnail(job, taskId, videoUrl) {
       }
     }
     window.syncMediaLibrary?.();
+    if (typeof window.addGeneratedVideoToEditor === 'function') {
+      window.addGeneratedVideoToEditor(job);
+    }
   } catch (e) {
     console.warn('Thumbnail failed:', e);
   } finally {

@@ -9,3 +9,4 @@ doc_get.json
 test/
 test.py
 projects/
+__pycache__/
